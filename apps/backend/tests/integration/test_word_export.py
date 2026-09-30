@@ -1,0 +1,86 @@
+"""Word content fidelity and real HTTP owner authorization."""
+from io import BytesIO
+from zipfile import ZipFile
+
+from docx import Document
+from httpx import ASGITransport, AsyncClient
+import pytest
+
+from app.auth import current_user_id
+from app.config import settings
+from app.main import app
+from app.models import User
+from app.passwords import hash_password
+from app.schemas.models import ResumeData
+from app.word_export import render_resume_docx
+
+
+def test_word_export_preserves_content_order_visibility_and_editable_text(sample_resume):
+    sample_resume['personalInfo']['name'] = 'José Example'
+    sample_resume['summary'] = '<p>Python <strong>developer</strong> &amp; student</p>'
+    sample_resume['sectionMeta'] = [
+        dict(id='personalInfo', key='personalInfo', displayName='Contact', sectionType='personalInfo', order=0),
+        dict(id='custom_1', key='custom_1', displayName='Leadership', sectionType='itemList', isDefault=False, order=1),
+        dict(id='summary', key='summary', displayName='Profile', sectionType='text', order=2),
+        dict(id='workExperience', key='workExperience', displayName='Experience', sectionType='itemList', order=3, isVisible=False),
+        dict(id='education', key='education', displayName='Education', sectionType='itemList', order=4),
+        dict(id='additional', key='additional', displayName='Skills', sectionType='stringList', order=5),
+    ]
+    sample_resume['customSections'] = {'custom_1': {'sectionType':'itemList', 'items':[{'title':'Volunteer', 'subtitle':'Example Club', 'years':'2026', 'description':['<p>Built <em>beds</em></p>', 'Plain point'], 'descriptionStyles':['bullet','plain']}]}}
+    content = render_resume_docx(ResumeData.model_validate(sample_resume))
+    with ZipFile(BytesIO(content)) as archive:
+        assert 'word/document.xml' in archive.namelist()
+        assert not any('media/' in name for name in archive.namelist())
+    document = Document(BytesIO(content))
+    text = '\n'.join(p.text for p in document.paragraphs)
+    assert 'José Example' in text
+    assert 'Python developer & student' in text
+    assert 'Built beds' in text and 'Plain point' in text
+    assert text.index('Leadership') < text.index('Profile') < text.index('Education')
+    assert 'Acme Corp' not in text
+    assert '<strong>' not in text
+    assert document.sections[0].page_width.inches == 8.5
+    assert document.sections[0].page_height.inches == 11
+    assert document.core_properties.author == ''
+    assert next(p for p in document.paragraphs if p.text == 'Built beds').style.name == 'List Bullet'
+    assert next(p for p in document.paragraphs if p.text == 'Plain point').style.name == 'Normal'
+
+
+def test_word_export_all_default_fields_and_a4(sample_resume):
+    document = Document(BytesIO(render_resume_docx(ResumeData.model_validate(sample_resume), page_size='A4', margins=(15, 16, 17, 18))))
+    assert round(document.sections[0].page_width.mm) == 210
+    assert round(document.sections[0].page_height.mm) == 297
+    assert round(document.sections[0].left_margin.mm) == 17
+    text = '\n'.join(p.text for p in document.paragraphs)
+    for expected in ['Jane Doe', 'Acme Corp', 'MIT', 'OpenAPI Generator', 'PostgreSQL', 'Spanish (Conversational)', 'AWS Solutions Architect Associate', 'Employee of the Year 2022']:
+        assert expected in text
+
+
+@pytest.mark.integration
+async def test_word_endpoint_session_owner_isolation_and_not_ready(isolated_backend_state, sample_resume, monkeypatch):
+    monkeypatch.setattr(settings, 'auth_required', True)
+    monkeypatch.setattr(settings, 'cookie_secure', False)
+    database = isolated_backend_state
+    with database._sync_write_session() as session:
+        session.add_all([User(user_id='member-a', email='a@example.test', password_hash=hash_password('test-password-123')), User(user_id='member-b', email='b@example.test', password_hash=hash_password('test-password-123'))])
+        session.commit()
+    token = current_user_id.set('member-a')
+    own = await database.create_resume('synthetic', processing_status='ready', processed_data=sample_resume)
+    pending = await database.create_resume('synthetic pending', processing_status='pending')
+    current_user_id.reset(token)
+    token = current_user_id.set('member-b')
+    other = await database.create_resume('other private content', processing_status='ready', processed_data=sample_resume)
+    current_user_id.reset(token)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
+        assert (await client.get(f"/api/v1/resumes/{own['resume_id']}/docx")).status_code == 401
+        signed_in = await client.post('/api/v1/auth/login', json={'email':'a@example.test','password':'test-password-123'}, headers={'Origin':'http://localhost:3000'})
+        assert signed_in.status_code == 200
+        exported = await client.get(f"/api/v1/resumes/{own['resume_id']}/docx")
+        assert exported.status_code == 200
+        assert exported.headers['content-type'] == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        assert 'resume.docx' in exported.headers['content-disposition']
+        assert exported.headers['cache-control'] == 'private, no-store'
+        assert Document(BytesIO(exported.content)).paragraphs[0].text == 'Jane Doe'
+        assert (await client.get(f"/api/v1/resumes/{other['resume_id']}/docx")).status_code == 404
+        assert (await client.get(f"/api/v1/resumes/{pending['resume_id']}/docx")).status_code == 409
+        assert (await client.get(f"/api/v1/resumes/{own['resume_id']}/docx?pageSize=INVALID")).status_code == 422

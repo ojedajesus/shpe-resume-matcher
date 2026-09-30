@@ -1,5 +1,6 @@
 {
   "common": {
+    "downloadWord": "Download Word",
     "save": "Save",
     "saving": "Saving...",
     "cancel": "Cancel",

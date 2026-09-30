@@ -1,5 +1,6 @@
 {
   "common": {
+    "downloadWord": "Word をダウンロード",
     "save": "保存",
     "saving": "保存中...",
     "cancel": "キャンセル",

@@ -30,6 +30,7 @@ from app.database import (
     db,
 )
 from app.pdf import render_resume_pdf, PDFRenderError
+from app.word_export import render_resume_docx
 from app.config import settings
 from app.preview import (
     PreviewBusyError,
@@ -2045,6 +2046,36 @@ async def update_resume_endpoint(
             is_master=updated.get("is_master", False),
             is_default_master=updated.get("is_default_master", False),
         ),
+    )
+
+
+@router.get("/{resume_id}/docx")
+async def download_resume_docx(
+    resume_id: str,
+    pageSize: str = Query("LETTER", pattern="^(A4|LETTER)$"),
+    marginTop: int = Query(20, ge=5, le=25),
+    marginBottom: int = Query(20, ge=5, le=25),
+    marginLeft: int = Query(20, ge=5, le=25),
+    marginRight: int = Query(20, ge=5, le=25),
+) -> Response:
+    """Download this member's saved resume as an editable Word document."""
+    resume = await db.get_resume(resume_id)
+    if not resume:
+        raise HTTPException(status_code=404, detail="Resume not found")
+    if resume.get("processing_status") != "ready" or not resume.get("processed_data"):
+        raise HTTPException(status_code=409, detail="Resume is not ready for Word export")
+    try:
+        data = ResumeData.model_validate(resume["processed_data"])
+    except ValidationError as error:
+        raise HTTPException(status_code=409, detail="Resume data must be repaired before Word export") from error
+    content = await asyncio.to_thread(
+        render_resume_docx, data, page_size=pageSize,
+        margins=(marginTop, marginBottom, marginLeft, marginRight),
+    )
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": 'attachment; filename="resume.docx"', "Cache-Control": "private, no-store"},
     )
 
 

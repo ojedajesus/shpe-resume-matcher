@@ -352,6 +352,30 @@ export async function downloadResumePdf(
   return await res.blob();
 }
 
+/** Download a member-owned editable Word document; no AI request is made. */
+export async function downloadResumeDocx(
+  resumeId: string,
+  settings?: TemplateSettings
+): Promise<Blob> {
+  const normalizedId = normalizeResumeId(resumeId);
+  const params = new URLSearchParams();
+  params.set('pageSize', settings?.pageSize ?? 'LETTER');
+  if (settings) {
+    params.set('marginTop', String(settings.margins.top));
+    params.set('marginBottom', String(settings.margins.bottom));
+    params.set('marginLeft', String(settings.margins.left));
+    params.set('marginRight', String(settings.margins.right));
+  }
+  const res = await apiFetch(
+    `${API_BASE}/resumes/${encodeURIComponent(normalizedId)}/docx?${params.toString()}`
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Failed to download Word document (status ${res.status}): ${text}`);
+  }
+  return res.blob();
+}
+
 /** Deletes a resume by ID */
 export async function deleteResume(resumeId: string): Promise<void> {
   const res = await apiDelete(`/resumes/${encodeURIComponent(resumeId)}`);

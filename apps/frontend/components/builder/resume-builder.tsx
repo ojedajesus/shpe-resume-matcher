@@ -33,6 +33,7 @@ import {
 import { PaginatedPreview } from '@/components/preview';
 import {
   downloadResumePdf,
+  downloadResumeDocx,
   downloadCoverLetterPdf,
   getResumePdfUrl,
   getCoverLetterPdfUrl,
@@ -948,7 +949,7 @@ const ResumeBuilderContent = () => {
     }
   };
 
-  const handleDownload = async () => {
+  const handleDownload = async (format: 'pdf' | 'docx' = 'pdf') => {
     if (!resumeId) {
       showNotification(t('builder.alerts.downloadNotAvailable'), 'warning');
       return;
@@ -959,15 +960,22 @@ const ResumeBuilderContent = () => {
     }
     try {
       setIsDownloading(true);
-      const blob = await downloadResumePdf(resumeId, templateSettings, uiLanguage);
+      const blob =
+        format === 'docx'
+          ? await downloadResumeDocx(resumeId, templateSettings)
+          : await downloadResumePdf(resumeId, templateSettings, uiLanguage);
       const company = getCompanyFromTitle(resumeTitle);
       const userName = resumeData.personalInfo?.name?.trim() || null;
       const filename = buildResumeFilename(userName, company, resumeId, 'resume');
-      downloadBlobAsFile(blob, filename);
+      downloadBlobAsFile(blob, format === 'docx' ? filename.replace(/\.pdf$/, '.docx') : filename);
       showNotification(t('builder.alerts.downloadSuccess'), 'success');
     } catch (error) {
       console.error('Failed to download resume:', error);
-      if (error instanceof TypeError && error.message.includes('Failed to fetch')) {
+      if (
+        format === 'pdf' &&
+        error instanceof TypeError &&
+        error.message.includes('Failed to fetch')
+      ) {
         const fallbackUrl = getResumePdfUrl(resumeId, templateSettings, uiLanguage);
         const didOpen = openUrlInNewTab(fallbackUrl);
         if (!didOpen) {
@@ -1435,11 +1443,20 @@ const ResumeBuilderContent = () => {
                   <Button
                     variant="success"
                     size="sm"
-                    onClick={handleDownload}
+                    onClick={() => handleDownload('pdf')}
                     disabled={!resumeId || isDownloading}
                   >
                     <Download className="w-4 h-4" />
                     {isDownloading ? t('common.generating') : t('common.download')}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleDownload('docx')}
+                    disabled={!resumeId || isDownloading}
+                  >
+                    <Download className="w-4 h-4" />
+                    {isDownloading ? t('common.generating') : t('common.downloadWord')}
                   </Button>
                 </>
               )}
