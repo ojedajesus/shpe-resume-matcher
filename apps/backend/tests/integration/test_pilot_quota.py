@@ -13,7 +13,9 @@ def _reserve_worker(db_path: str, start, queue) -> None:
     import app.quota as quota
 
     quota.db = Database(Path(db_path))
-    settings.ai_allowance_cents = 1
+    # One request reserves ceil((1 + 4096 + 5) * 4 / 10000) = 2 cents.
+    # Admit exactly one request so the second process exercises the atomic cap.
+    settings.ai_allowance_cents = 2
     settings.llm_model = "claude-haiku-4-5-20251001"
     current_user_id.set("member")
     start.wait()
