@@ -66,6 +66,14 @@ def init_models_sync(engine: Engine) -> None:
     # ``create_all`` does not ALTER existing SQLite tables. Keep this additive
     # migration idempotent so older local databases can load resumes safely.
     with engine.begin() as conn:
+        # Ownership was added for the invite-only fork. Existing single-user
+        # content is quarantined under ``legacy`` until an owner deliberately
+        # adopts or deletes it; it is never assigned to the first member.
+        for table in ("resumes", "jobs", "improvements", "tailoring_previews", "applications"):
+            table_columns = conn.exec_driver_sql(f"PRAGMA table_info({table})").mappings().all()
+            if table_columns and "owner_id" not in {column["name"] for column in table_columns}:
+                conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN owner_id VARCHAR NOT NULL DEFAULT 'legacy'")
+                conn.exec_driver_sql(f"CREATE INDEX IF NOT EXISTS ix_{table}_owner_id ON {table} (owner_id)")
         columns = conn.exec_driver_sql("PRAGMA table_info(resumes)").mappings().all()
         existing_columns = {column["name"] for column in columns}
         if columns and "interview_prep" not in existing_columns:
@@ -81,6 +89,7 @@ def init_models_sync(engine: Engine) -> None:
             # Multi-track masters: the single-master slot is replaced by a
             # single-default slot. create_all never drops indexes on existing tables.
             conn.exec_driver_sql("DROP INDEX IF EXISTS ux_resumes_single_master")
+            conn.exec_driver_sql("DROP INDEX IF EXISTS ux_resumes_single_default_master")
             if "created_at" in existing_columns:
                 conn.exec_driver_sql(
                     "UPDATE resumes SET is_default_master = 1 WHERE resume_id = ("
@@ -90,7 +99,7 @@ def init_models_sync(engine: Engine) -> None:
                 )
             conn.exec_driver_sql(
                 "CREATE UNIQUE INDEX IF NOT EXISTS ux_resumes_single_default_master "
-                "ON resumes (is_default_master) WHERE is_default_master = 1"
+                "ON resumes (owner_id, is_default_master) WHERE is_default_master = 1"
             )
 
         preview_columns = conn.exec_driver_sql("PRAGMA table_info(tailoring_previews)").mappings().all()

@@ -35,6 +35,7 @@ type PageProps = {
     accentColor?: string;
     lang?: string;
     draft?: string;
+    renderToken?: string;
   }>;
 };
 
@@ -77,12 +78,19 @@ function parseBoolean(value: string | undefined, defaultValue: boolean): boolean
   return defaultValue;
 }
 
-async function fetchResumeData(id: string, draftToken?: string): Promise<ResumeData> {
+async function fetchResumeData(
+  id: string,
+  draftToken?: string,
+  renderToken?: string
+): Promise<ResumeData> {
   const url =
     draftToken && /^[a-f0-9]{32}$/.test(draftToken)
       ? `${API_BASE}/resumes/render-drafts/${draftToken}`
       : `${API_BASE}/resumes?resume_id=${encodeURIComponent(id)}`;
-  const res = await fetch(url, { cache: 'no-store' });
+  const res = await fetch(url, {
+    cache: 'no-store',
+    headers: renderToken ? { 'X-Internal-Render-Token': renderToken } : undefined,
+  });
   if (!res.ok) {
     throw new Error(`Failed to load resume (status ${res.status}).`);
   }
@@ -164,7 +172,11 @@ export default async function PrintResumePage({ params, searchParams }: PageProp
   const draftToken = resolvedSearchParams?.draft;
   let resumeData: ResumeData;
   try {
-    resumeData = await fetchResumeData(resolvedParams.id, draftToken);
+    resumeData = await fetchResumeData(
+      resolvedParams.id,
+      draftToken,
+      resolvedSearchParams?.renderToken
+    );
   } catch (error) {
     if (!draftToken) throw error;
     // Page-fit drafts are short-lived. Render a marker the PDF renderer waits for

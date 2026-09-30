@@ -242,7 +242,7 @@ def _get_llm_api_key_with_fallback() -> str:
     import os
 
     # First check environment variable
-    env_key = os.environ.get("LLM_API_KEY", "")
+    env_key = os.environ.get("ANTHROPIC_API_KEY", "") or os.environ.get("LLM_API_KEY", "")
     if env_key:
         return env_key
 
@@ -286,11 +286,17 @@ class Settings(BaseSettings):
         "deepseek",
         "groq",
         "ollama",
-    ] = "openai"
-    llm_model: str = "gpt-5-nano-2025-08-07"
+    ] = "anthropic"
+    llm_model: str = "claude-haiku-4-5-20251001"
     llm_api_key: str = ""
     llm_api_base: str | None = None  # For Ollama or custom endpoints
     log_llm: Literal["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"] = "WARNING"
+    auth_required: bool = True
+    cookie_secure: bool = True
+    session_hours: int = Field(default=12, ge=1, le=168)
+    ai_allowance_cents: int = Field(default=4000, ge=1)
+    anthropic_input_micros_per_token: int = Field(default=1, ge=0)
+    anthropic_output_micros_per_token: int = Field(default=5, ge=0)
 
     @field_validator("llm_provider", mode="before")
     @classmethod
@@ -414,6 +420,8 @@ class Settings(BaseSettings):
         """
         if self.llm_api_key:
             return self.llm_api_key
+        if self.llm_provider == "anthropic" and os.environ.get("ANTHROPIC_API_KEY"):
+            return os.environ["ANTHROPIC_API_KEY"]
         return _get_llm_api_key_with_fallback()
 
 

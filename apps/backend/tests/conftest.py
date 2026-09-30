@@ -89,6 +89,9 @@ async def isolated_backend_state(
     test_db = Database(db_path=test_data_dir / "resume_matcher.db")
 
     monkeypatch.setattr(config_module.settings, "data_dir", test_data_dir)
+    # Legacy endpoint tests focus on their route contract. Authentication has
+    # a dedicated real-HTTP suite that explicitly enables this production gate.
+    monkeypatch.setattr(config_module.settings, "auth_required", False)
     # Preserve compatibility with code/tests that still monkeypatch the legacy
     # name while guaranteeing old config implementations are safe during RED.
     monkeypatch.setattr(config_module, "CONFIG_FILE_PATH", test_data_dir / "config.json")

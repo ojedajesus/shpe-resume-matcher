@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 # Fix for Windows: Use ProactorEventLoop for subprocess support (Playwright)
 if sys.platform == "win32":
@@ -31,6 +32,55 @@ from app.routers import (
     resumes_router,
 )
 from app.routers.resumes import drain_processing_cleanup_tasks
+from app.auth import current_is_admin, current_user_id, resolve_session, router as auth_router
+from app.render_auth import verify_render_token
+
+
+class AuthenticationMiddleware(BaseHTTPMiddleware):
+    """Require server sessions and same-session CSRF on every state change."""
+    async def dispatch(self, request: Request, call_next):
+        public = request.url.path in {"/api/v1/health", "/api/v1/auth/login", "/api/v1/auth/accept-invitation"}
+        if not settings.auth_required or public:
+            if public and request.method == "POST":
+                origin = request.headers.get("origin")
+                allowed = {value.rstrip("/") for value in settings.effective_cors_origins}
+                if origin and origin.rstrip("/") not in allowed:
+                    return JSONResponse({"detail": "Origin not allowed"}, status_code=403)
+            return await call_next(request)
+        render_token = request.headers.get("x-internal-render-token")
+        if render_token and request.method == "GET" and request.url.path == "/api/v1/resumes":
+            resume_id = request.query_params.get("resume_id", "")
+            render_owner = verify_render_token(render_token, resume_id)
+            if render_owner:
+                owner_token = current_user_id.set(render_owner)
+                try:
+                    return await call_next(request)
+                finally:
+                    current_user_id.reset(owner_token)
+        resolved = resolve_session(request.cookies.get("shpe_session"))
+        if resolved is None:
+            return JSONResponse({"detail": "Authentication required"}, status_code=401)
+        user, session = resolved
+        admin_config_routes = {
+            ("GET", "/api/v1/config/llm-api-key"), ("PUT", "/api/v1/config/llm-api-key"),
+            ("POST", "/api/v1/config/llm-test"), ("GET", "/api/v1/config/api-keys"),
+            ("POST", "/api/v1/config/api-keys"), ("DELETE", "/api/v1/config/api-keys"),
+            ("POST", "/api/v1/config/reset"),
+        }
+        is_provider_key_delete = request.method == "DELETE" and request.url.path.startswith("/api/v1/config/api-keys/")
+        shared_config_write = request.method in {"PUT", "POST", "DELETE"} and request.url.path.startswith("/api/v1/config/")
+        if ((request.method, request.url.path) in admin_config_routes or is_provider_key_delete or shared_config_write) and not user.is_admin:
+            return JSONResponse({"detail": "Administrator access required"}, status_code=403)
+        if request.method not in {"GET", "HEAD", "OPTIONS"} and request.headers.get("x-csrf-token") != session.csrf_token:
+            return JSONResponse({"detail": "CSRF validation failed"}, status_code=403)
+        request.state.user, request.state.session = user, session
+        owner_token = current_user_id.set(user.user_id)
+        admin_token = current_is_admin.set(user.is_admin)
+        try:
+            return await call_next(request)
+        finally:
+            current_user_id.reset(owner_token)
+            current_is_admin.reset(admin_token)
 
 
 def _configure_application_logging() -> None:
@@ -85,6 +135,7 @@ app = FastAPI(
     version=__version__,
     lifespan=lifespan,
 )
+app.add_middleware(AuthenticationMiddleware)
 
 @app.exception_handler(DatabaseBusyError)
 async def database_busy_handler(request: Request, error: DatabaseBusyError) -> JSONResponse:
@@ -107,6 +158,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(health_router, prefix="/api/v1")
+app.include_router(auth_router, prefix="/api/v1")
 app.include_router(config_router, prefix="/api/v1")
 app.include_router(resumes_router, prefix="/api/v1")
 app.include_router(jobs_router, prefix="/api/v1")

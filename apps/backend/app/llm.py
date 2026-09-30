@@ -863,6 +863,10 @@ async def check_llm_health(
     model_name = get_model_name(config)
 
     prompt = test_prompt or "Hi"
+    from app.quota import reserve, settle
+
+    reservation = reserve(prompt, 64, "health-check")
+    response = None
 
     try:
         # Make a minimal test call with timeout
@@ -882,6 +886,7 @@ async def check_llm_health(
             kwargs["reasoning_effort"] = config.reasoning_effort
 
         response = await litellm.acompletion(**kwargs)
+        settle(reservation, response)
         content = _extract_choice_text(response.choices[0])
         if not content:
             # LLM-003: Empty response (even after reasoning_content / thinking
@@ -932,6 +937,7 @@ async def check_llm_health(
             )
         return result
     except Exception as e:
+        settle(reservation, response, uncertain=True)
         # Log full exception details server-side, but do not expose them to clients
         logging.exception(
             "LLM health check failed",
@@ -983,6 +989,9 @@ async def complete(
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": prompt})
 
+    from app.quota import reserve, settle
+    reservation = reserve(prompt + (system_prompt or ""), max_tokens, "completion")
+    response = None
     try:
         kwargs: dict[str, Any] = {
             "model": "primary",
@@ -1000,6 +1009,7 @@ async def complete(
             kwargs["reasoning_effort"] = config.reasoning_effort
 
         response = await router.acompletion(**kwargs)
+        settle(reservation, response)
 
         content = _extract_choice_text(response.choices[0])
         if not content:
@@ -1012,8 +1022,10 @@ async def complete(
             raise ValueError("Response contained no visible output")
         return content
     except TimeoutError:
+        settle(reservation, response, uncertain=True)
         raise
     except Exception as e:
+        settle(reservation, response, uncertain=True)
         # Log the actual error server-side for debugging
         logging.error(f"LLM completion failed: {e}", extra={
                       "model": model_name})
@@ -1545,6 +1557,9 @@ async def complete_json(
     json_mode_failed = False
 
     for attempt in range(retries + 1):
+        from app.quota import reserve, settle
+        reservation = reserve(prompt + json_system, max_tokens, f"json:{schema_type}:attempt-{attempt + 1}")
+        response = None
         try:
             kwargs: dict[str, Any] = {
                 "model": "primary",
@@ -1596,6 +1611,7 @@ async def complete_json(
                 kwargs["response_format"] = {"type": "json_object"}
 
             response = await router.acompletion(**kwargs)
+            settle(reservation, response)
             # Never parse ``reasoning_content`` as JSON.  If the model has
             # consumed its budget on reasoning but produced no final answer,
             # treat it as an empty completion and retry with the full budget.
@@ -1713,6 +1729,7 @@ async def complete_json(
             # Transport errors — Router already retried with backoff.
             # Cooldowns are disabled (see _build_router); no additional
             # retry is attempted here.
+            settle(reservation, response, uncertain=response is None)
             raise
 
     raise ValueError(f"Failed after {retries + 1} attempts")

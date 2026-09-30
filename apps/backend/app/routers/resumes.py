@@ -114,6 +114,8 @@ from app.services.cover_letter import (
 )
 from app.services.interview_prep import generate_interview_prep
 from app.prompts import DEFAULT_IMPROVE_PROMPT_ID, IMPROVE_PROMPT_OPTIONS
+from app.auth import current_user_id
+from app.render_auth import issue_render_token
 
 logger = logging.getLogger(__name__)
 _PROCESSING_CLEANUP_TIMEOUT_SECONDS = 5.0
@@ -2109,7 +2111,8 @@ async def download_resume_pdf(
     )
     if lang:
         params = f"{params}&lang={lang}"
-    url = f"{settings.frontend_base_url}/print/resumes/{resume_id}?{params}"
+    render_token = issue_render_token(current_user_id.get(), resume_id)
+    url = f"{settings.frontend_base_url}/print/resumes/{resume_id}?{params}&renderToken={render_token}"
 
     # Use the exact margins provided; compact mode only affects spacing.
     pdf_margins = {
@@ -2654,7 +2657,8 @@ async def download_cover_letter_pdf(
         )
 
     # Build print URL (same pattern as resume PDF)
-    url = f"{settings.frontend_base_url}/print/cover-letter/{resume_id}?pageSize={pageSize}"
+    render_token = issue_render_token(current_user_id.get(), resume_id)
+    url = f"{settings.frontend_base_url}/print/cover-letter/{resume_id}?pageSize={pageSize}&renderToken={render_token}"
     if lang:
         url = f"{url}&lang={lang}"
 

@@ -7,6 +7,7 @@ import { JDDisplay } from './jd-display';
 import { HighlightedResumeView } from './highlighted-resume-view';
 import { CheckCircle, Target } from 'lucide-react';
 import { useTranslations } from '@/lib/i18n';
+import { compareRequirements } from '@/lib/utils/requirement-evidence';
 
 interface JDComparisonViewProps {
   jobDescription: string;
@@ -25,7 +26,7 @@ export function JDComparisonView({ jobDescription, resumeData }: JDComparisonVie
   const keywords = useMemo(() => extractKeywords(jobDescription), [jobDescription]);
 
   // Build full resume text for stats calculation
-  const resumeText = useMemo(() => {
+  const evidenceLines = useMemo(() => {
     const parts: string[] = [];
 
     if (resumeData.summary) parts.push(resumeData.summary);
@@ -53,11 +54,17 @@ export function JDComparisonView({ jobDescription, resumeData }: JDComparisonVie
       resumeData.additional.certificationsTraining?.forEach((c) => parts.push(c));
     }
 
-    return parts.join(' ');
+    return parts;
   }, [resumeData]);
+
+  const resumeText = useMemo(() => evidenceLines.join(' '), [evidenceLines]);
 
   // Calculate match statistics
   const stats = useMemo(() => calculateMatchStats(resumeText, keywords), [resumeText, keywords]);
+  const requirements = useMemo(
+    () => compareRequirements(jobDescription, evidenceLines),
+    [jobDescription, evidenceLines]
+  );
 
   return (
     <div className="h-full flex flex-col">
@@ -95,6 +102,33 @@ export function JDComparisonView({ jobDescription, resumeData }: JDComparisonVie
         </div>
       </div>
 
+      <div className="border-b border-paper-tint bg-background p-4">
+        <h3 className="font-mono text-sm font-bold uppercase">Grounded requirement review</h3>
+        <p className="mt-1 text-xs text-ink-soft">
+          Required and preferred qualifications are estimated from the pasted job description.
+          Missing evidence is a question—not a claim.
+        </p>
+        <div className="mt-3 grid max-h-44 gap-2 overflow-auto md:grid-cols-2">
+          {requirements.map((item, index) => (
+            <div
+              key={`${item.requirement}-${index}`}
+              className="border border-black bg-white p-2 text-xs"
+            >
+              <span className="font-mono font-bold uppercase text-blue-700">
+                {item.priority} · {item.status}
+              </span>
+              <p className="mt-1">{item.requirement}</p>
+              {item.evidence ? (
+                <blockquote className="mt-1 border-l-2 border-blue-700 pl-2">
+                  “{item.evidence}”
+                </blockquote>
+              ) : (
+                <p className="mt-1 italic">Ask the member for truthful supporting detail.</p>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
       {/* Split View */}
       <div className="flex-1 grid grid-cols-2 min-h-0">
         {/* Left: JD */}

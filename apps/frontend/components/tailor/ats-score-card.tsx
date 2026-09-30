@@ -55,7 +55,12 @@ export function ATSScoreCard({ atsScore }: ATSScoreCardProps) {
     <div className="rounded-lg border border-gray-700 bg-gray-800/60 p-5 space-y-5">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <h3 className="text-base font-semibold text-white">ATS Score Breakdown</h3>
+        <div>
+          <h3 className="text-base font-semibold text-white">Estimated job-description match</h3>
+          <p className="mt-1 text-xs text-blue-100">
+            Not an employer ATS score or hiring guarantee.
+          </p>
+        </div>
         <div className="flex items-end gap-1">
           <span className={`text-3xl font-bold tabular-nums ${scoreColor(overall_score)}`}>
             {overall_score.toFixed(1)}
