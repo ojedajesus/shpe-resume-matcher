@@ -13,7 +13,8 @@ const REQUEST_TIMEOUT_MS = Number.isFinite(parsedTimeoutMs)
   : 240_000;
 
 const nextConfig: NextConfig = {
-  output: 'standalone',
+  // Vercel packages the app itself; retain standalone output for self-hosting.
+  output: process.env.VERCEL ? undefined : 'standalone',
   serverExternalPackages: ['@sparticuz/chromium', 'puppeteer-core'],
   outputFileTracingIncludes: {
     '/internal/pdf': ['./node_modules/@sparticuz/chromium/bin/**/*'],
