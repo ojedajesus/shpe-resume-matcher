@@ -63,6 +63,7 @@ class Resume(Base):
             "owner_id", "is_default_master",
             unique=True,
             sqlite_where=text("is_default_master = 1"),
+            postgresql_where=text("is_default_master = true"),
         ),
     )
 
@@ -219,3 +220,19 @@ class AuthAttempt(Base):
     subject_hash: Mapped[str] = mapped_column(String, index=True)
     action: Mapped[str] = mapped_column(String, index=True)
     created_at: Mapped[str] = mapped_column(String, default=_utcnow_iso, index=True)
+
+
+class CloudConfig(Base):
+    """Persistent configuration shared by serverless workers."""
+    __tablename__ = "cloud_config"
+    config_id: Mapped[str] = mapped_column(String, primary_key=True)
+    value: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class RenderDraft(Base):
+    """Short-lived print drafts shared across serverless workers."""
+    __tablename__ = "render_drafts"
+    token: Mapped[str] = mapped_column(String, primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    expires_at: Mapped[str] = mapped_column(String, index=True)
+    value: Mapped[dict] = mapped_column(JSON)

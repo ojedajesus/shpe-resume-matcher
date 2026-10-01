@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
 from app.db_engine import init_models_sync, make_async_engine, make_sync_engine
-from app.models import ApiKey, Application, Improvement, Job, Resume, TailoringPreview
+from app.models import ApiKey, Application, Improvement, Job, Resume, TailoringPreview, CloudConfig, RenderDraft
 from app.preview import (
     PreviewBusyError,
     PreviewClaim,
@@ -80,6 +80,8 @@ def _translate_write_errors() -> Iterator[None]:
     try:
         yield
     except OperationalError as error:
+        if getattr(error.orig, "sqlstate", None) in {"55P03", "40P01", "40001"}:
+            raise DatabaseBusyError("Database is busy") from error
         code = getattr(error.orig, "sqlite_errorcode", None)
         if isinstance(code, int) and code & 0xFF in (
             sqlite3.SQLITE_BUSY,
@@ -113,6 +115,7 @@ class Database:
     """Async SQLAlchemy facade for resume matcher data."""
 
     def __init__(self, db_path: Path | None = None):
+        self.database_url = settings.database_url if db_path is None else ""
         self.db_path = db_path or settings.sqlite_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._async_engine = None
@@ -132,12 +135,12 @@ class Database:
         """
         if self._initialized:
             return
-        self._sync_engine = make_sync_engine(self.db_path)
+        self._sync_engine = make_sync_engine(self.db_path, self.database_url)
         self._sync_session_factory = sessionmaker(
             self._sync_engine, expire_on_commit=False
         )
         init_models_sync(self._sync_engine)
-        self._async_engine = make_async_engine(self.db_path)
+        self._async_engine = make_async_engine(self.db_path, self.database_url)
         self._async_session_factory = async_sessionmaker(
             self._async_engine, expire_on_commit=False
         )
@@ -159,7 +162,13 @@ class Database:
         """
         with _translate_write_errors():
             async with self._session() as session:
-                await session.execute(text("BEGIN IMMEDIATE"))
+                if self.database_url:
+                    # Serialize short app write transactions across workers,
+                    # preserving SQLite's reservation/quota/idempotency contract.
+                    await session.execute(text("SET LOCAL lock_timeout = '5s'"))
+                    await session.execute(text("SELECT pg_advisory_xact_lock(734820196)"))
+                else:
+                    await session.execute(text("BEGIN IMMEDIATE"))
                 yield session
 
     @property
@@ -170,10 +179,19 @@ class Database:
 
     @contextmanager
     def _sync_write_session(self) -> Iterator[Session]:
-        """Reserve a synchronous key-store writer with the same busy contract."""
+        """Serialize auth/quota/config writes independently of document writes.
+
+        These synchronous tables are not written by async document methods.
+        A separate lock avoids blocking the event loop behind its own async
+        transaction while retaining cross-worker auth and quota atomicity.
+        """
         with _translate_write_errors():
             with self._sync() as session:
-                session.execute(text("BEGIN IMMEDIATE"))
+                if self.database_url:
+                    session.execute(text("SET LOCAL lock_timeout = '5s'"))
+                    session.execute(text("SELECT pg_advisory_xact_lock(734820197)"))
+                else:
+                    session.execute(text("BEGIN IMMEDIATE"))
                 yield session
 
     async def close(self) -> None:
@@ -187,6 +205,41 @@ class Database:
             self._sync_engine = None
             self._sync_session_factory = None
         self._initialized = False
+
+    def get_cloud_config(self) -> dict:
+        with self._sync() as session:
+            row = session.get(CloudConfig, "shared")
+            return copy.deepcopy(row.value) if row else {}
+
+    def save_cloud_config(self, value: dict) -> None:
+        with self._sync_write_session() as session:
+            row = session.get(CloudConfig, "shared")
+            if row:
+                row.value = copy.deepcopy(value)
+            else:
+                session.add(CloudConfig(config_id="shared", value=copy.deepcopy(value)))
+            session.commit()
+
+    def put_render_draft(self, data: dict, ttl: float) -> str:
+        token = uuid4().hex
+        with self._sync_write_session() as session:
+            session.execute(delete(RenderDraft).where(RenderDraft.expires_at <= _now()))
+            session.add(RenderDraft(token=token, owner_id=_owner(), value=data,
+                expires_at=(datetime.now(timezone.utc) + timedelta(seconds=ttl)).isoformat()))
+            session.commit()
+        return token
+
+    def get_render_draft(self, token: str) -> dict | None:
+        with self._sync() as session:
+            row = session.get(RenderDraft, token)
+            if row and row.owner_id == _owner() and row.expires_at > _now():
+                return copy.deepcopy(row.value)
+        return None
+
+    def discard_render_draft(self, token: str) -> None:
+        with self._sync_write_session() as session:
+            session.execute(delete(RenderDraft).where(RenderDraft.token == token, RenderDraft.owner_id == _owner()))
+            session.commit()
 
     # -- row -> dict converters ---------------------------------------------
 

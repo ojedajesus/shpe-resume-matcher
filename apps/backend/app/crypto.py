@@ -68,6 +68,10 @@ def _write_secret(path: Path, key: bytes, *, exclusive: bool = False) -> None:
 def _load_fernet() -> Fernet:
     """Load (or generate) the Fernet instance, cached per secret path."""
     global _fernet, _loaded_from
+    if settings.encryption_key:
+        return Fernet(settings.encryption_key.encode("ascii"))
+    if settings.database_url or os.environ.get("VERCEL"):
+        raise RuntimeError("ENCRYPTION_KEY must be set for cloud deployments")
     path = _secret_path()
     if _fernet is not None and _loaded_from == path:
         return _fernet

@@ -56,8 +56,9 @@ class AuthenticationMiddleware:
                     return await JSONResponse({"detail": "Origin not allowed"}, status_code=403)(scope, receive, send)
             return await self.app(scope, receive, send)
         render_token = request.headers.get("x-internal-render-token")
-        if render_token and request.method == "GET" and request.url.path == "/api/v1/resumes":
-            resume_id = request.query_params.get("resume_id", "")
+        render_draft = request.url.path.startswith("/api/v1/resumes/render-drafts/")
+        if render_token and request.method == "GET" and (request.url.path == "/api/v1/resumes" or render_draft):
+            resume_id = request.url.path.rsplit("/", 1)[-1] if render_draft else request.query_params.get("resume_id", "")
             render_owner = verify_render_token(render_token, resume_id)
             if render_owner:
                 owner_token = current_user_id.set(render_owner)
@@ -104,12 +105,19 @@ _configure_application_logging()
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan manager."""
     # Startup
+    import os
+    if os.environ.get("VERCEL") and not (settings.pdf_renderer_url and settings.pdf_renderer_secret):
+        raise RuntimeError("PDF_RENDERER_URL and PDF_RENDERER_SECRET are required on Vercel")
+    if os.environ.get("VERCEL") and not settings.database_url:
+        raise RuntimeError("DATABASE_URL is required on Vercel; temporary SQLite is not durable")
+    if settings.database_url and not settings.encryption_key:
+        raise RuntimeError("ENCRYPTION_KEY is required with cloud persistence")
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     # Import a legacy TinyDB database into SQLite if present (idempotent).
     # Fail-fast on error: starting with an empty DB would look like data loss.
     from app.scripts.migrate_tinydb_to_sqlite import migrate as migrate_tinydb
 
-    result = await migrate_tinydb()
+    result = {"status": "cloud"} if settings.database_url else await migrate_tinydb()
     if result.get("status") == "migrated":
         logger.info("Startup data migration: %s", result)
     # Fold any legacy plaintext API keys into the encrypted store (idempotent,

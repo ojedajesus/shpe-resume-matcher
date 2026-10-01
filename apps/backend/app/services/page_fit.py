@@ -42,17 +42,27 @@ class RenderDraftStore:
             self._items.popitem(last=False)
 
     def put(self, data: dict[str, Any]) -> str:
+        if settings.database_url:
+            from app.database import db
+            return db.put_render_draft(data, self._ttl)
         token = uuid4().hex
         self._items[token] = (self._clock() + self._ttl, data)
         self._evict()
         return token
 
     def get(self, token: str) -> dict[str, Any] | None:
+        if settings.database_url:
+            from app.database import db
+            return db.get_render_draft(token)
         self._evict()
         item = self._items.get(token)
         return item[1] if item else None
 
     def discard(self, token: str) -> None:
+        if settings.database_url:
+            from app.database import db
+            db.discard_render_draft(token)
+            return
         self._items.pop(token, None)
 
 
@@ -67,7 +77,10 @@ async def measure_page_count(data: dict[str, Any], fit: PageFitSettings) -> int:
     """Render ``data`` with the user's print settings and return its page count."""
     token = render_drafts.put(data)
     try:
-        query = urlencode(fit.to_query())
+        from app.auth import current_user_id
+        from app.render_auth import issue_render_token
+        render_token = issue_render_token(current_user_id.get(), token)
+        query = urlencode({**fit.to_query(), "renderToken": render_token})
         url = f"{settings.frontend_base_url}/print/resumes/draft?draft={token}&{query}"
         margins = {
             "top": fit.marginTop,

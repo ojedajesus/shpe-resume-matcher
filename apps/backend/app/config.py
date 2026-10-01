@@ -33,6 +33,9 @@ def get_config_path() -> Path:
 
 def _read_config_json() -> dict[str, Any]:
     """Raw read of config.json (no key injection)."""
+    if settings.database_url:
+        from app.database import db
+        return db.get_cloud_config()
     config_path = get_config_path()
     if config_path.exists():
         try:
@@ -53,6 +56,10 @@ def _write_config_json(config: dict[str, Any]) -> None:
     replacement are logged: the snapshot is already installed, so callers must
     still acknowledge the save and invalidate cached reads.
     """
+    if settings.database_url:
+        from app.database import db
+        db.save_cloud_config(config)
+        return
     serialized = json.dumps(config, indent=2)
     with _CONFIG_WRITE_LOCK:
         # Follow managed symlinks instead of replacing the link itself. Keep an
@@ -275,6 +282,13 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    # Cloud deployments use Postgres and stable environment secrets. Local
+    # installs retain SQLite and their existing on-disk encryption secret.
+    database_url: str = ""
+    encryption_key: str = ""
+    pdf_renderer_url: str = ""
+    pdf_renderer_secret: str = ""
+
     # LLM Configuration
     llm_provider: Literal[
         "openai",
@@ -396,7 +410,7 @@ class Settings(BaseSettings):
         return origins
 
     # Paths
-    data_dir: Path = Path(__file__).parent.parent / "data"
+    data_dir: Path = Path("/tmp/shpe-resume-matcher") if os.environ.get("VERCEL") else Path(__file__).parent.parent / "data"
 
     @property
     def db_path(self) -> Path:
