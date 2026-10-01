@@ -2052,6 +2052,8 @@ async def update_resume_endpoint(
 @router.get("/{resume_id}/docx")
 async def download_resume_docx(
     resume_id: str,
+    template: str = Query("swiss-single", pattern="^(swiss-single|swiss-two-column|modern|modern-two-column|latex|clean|vivid)$"),
+    accentColor: str = Query("blue", pattern="^(blue|green|orange|red)$"),
     pageSize: str = Query("A4", pattern="^(A4|LETTER)$"),
     marginTop: int = Query(10, ge=5, le=25),
     marginBottom: int = Query(10, ge=5, le=25),
@@ -2077,7 +2079,7 @@ async def download_resume_docx(
     except ValidationError as error:
         raise HTTPException(status_code=409, detail="Resume data must be repaired before Word export") from error
     content = await asyncio.to_thread(
-        render_resume_docx, data, page_size=pageSize,
+        render_resume_docx, data, template=template, accent_color=accentColor, page_size=pageSize,
         margins=(marginTop, marginBottom, marginLeft, marginRight),
         section_spacing=sectionSpacing, item_spacing=itemSpacing, line_height=lineHeight,
         font_size=fontSize, header_scale=headerScale, header_font=headerFont,

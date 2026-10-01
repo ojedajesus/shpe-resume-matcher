@@ -81,6 +81,12 @@ async def test_word_endpoint_session_owner_isolation_and_not_ready(isolated_back
         assert 'resume.docx' in exported.headers['content-disposition']
         assert exported.headers['cache-control'] == 'private, no-store'
         assert Document(BytesIO(exported.content)).paragraphs[0].text == 'JANE DOE'
+        selected = await client.get(f"/api/v1/resumes/{own['resume_id']}/docx?template=modern-two-column&accentColor=red")
+        assert selected.status_code == 200
+        selected_doc = Document(BytesIO(selected.content))
+        assert len(selected_doc.tables) == 1
+        assert str(selected_doc.styles['Heading 1'].font.color.rgb) == 'DC2626'
+        assert (await client.get(f"/api/v1/resumes/{own['resume_id']}/docx?template=unknown")).status_code == 422
         assert (await client.get(f"/api/v1/resumes/{other['resume_id']}/docx")).status_code == 404
         assert (await client.get(f"/api/v1/resumes/{pending['resume_id']}/docx")).status_code == 409
         assert (await client.get(f"/api/v1/resumes/{own['resume_id']}/docx?pageSize=INVALID")).status_code == 422
@@ -139,3 +145,28 @@ def test_fractional_text_sizes_retain_pdf_widths_in_compact_serif_export(sample_
     assert bullet.text.startswith('Built REST APIs')
     assert bullet.paragraph_format.line_spacing.pt == pytest.approx(9 * .92 * 1.35 * .92, abs=.05)
     assert document.styles['Heading 1'].font.size.pt == 11
+
+
+@pytest.mark.parametrize("template", ["swiss-single", "swiss-two-column", "modern", "modern-two-column", "latex", "clean", "vivid"])
+def test_word_template_layout_and_content(sample_resume, template):
+    document = Document(BytesIO(render_resume_docx(ResumeData.model_validate(sample_resume), template=template, accent_color="green")))
+    columns = template in {"swiss-two-column", "modern-two-column", "vivid"}
+    assert len(document.tables) == int(columns)
+    paragraphs = list(document.paragraphs)
+    if columns:
+        main, sidebar = document.tables[0].rows[0].cells
+        assert "Acme Corp" in "\n".join(p.text for p in main.paragraphs)
+        assert "Acme Corp" not in "\n".join(p.text for p in sidebar.paragraphs)
+        paragraphs += main.paragraphs + sidebar.paragraphs
+    text = "\n".join(p.text for p in paragraphs)
+    for value in ["Acme Corp", "Built REST APIs", "PostgreSQL"]:
+        assert value in text
+    if template in {"modern", "modern-two-column", "vivid"}:
+        assert str(document.styles["Heading 1"].font.color.rgb) == "15803D"
+    if template == "latex":
+        assert "Experience" in text and "EXPERIENCE" not in text
+        entry = next(p for p in paragraphs if p.text.startswith("Acme Corp"))
+        assert entry.runs[0].bold
+    if template == "clean":
+        assert document.styles["Title"].font.bold is False
+        assert str(document.styles["Heading 1"].font.color.rgb) == "6B7280"
