@@ -78,40 +78,80 @@ export default function AcceptInvitationPage() {
           Accept invitation
         </h1>
         <p className="mt-6 font-mono text-sm">
-          Create your private account using the email and one-time invitation from your chapter owner.
+          Create your private account using the email and one-time invitation from your chapter
+          owner.
         </p>
         <form onSubmit={submit} className="mt-8 grid gap-5">
           <label className="grid gap-2 font-mono text-xs font-bold uppercase">
             Email
-            <input className={inputClass} type="email" autoComplete="email" required
-              value={email} onChange={(event) => setEmail(event.target.value)} />
+            <input
+              className={inputClass}
+              type="email"
+              autoComplete="email"
+              required
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+            />
           </label>
           <label className="grid gap-2 font-mono text-xs font-bold uppercase">
             Invitation token
-            <input className={inputClass} type="password" autoComplete="off" required
-              minLength={32} maxLength={256} value={token}
-              onChange={(event) => setToken(event.target.value)} />
+            <input
+              className={inputClass}
+              type="password"
+              autoComplete="off"
+              required
+              minLength={32}
+              maxLength={256}
+              value={token}
+              onChange={(event) => setToken(event.target.value)}
+            />
           </label>
           <label className="grid gap-2 font-mono text-xs font-bold uppercase">
             New password (at least 12 characters)
-            <input className={inputClass} type="password" autoComplete="new-password" required
-              minLength={12} maxLength={256} value={password}
-              onChange={(event) => setPassword(event.target.value)} />
+            <input
+              className={inputClass}
+              type="password"
+              autoComplete="new-password"
+              required
+              minLength={12}
+              maxLength={256}
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+            />
           </label>
           <label className="grid gap-2 font-mono text-xs font-bold uppercase">
             Confirm password
-            <input className={inputClass} type="password" autoComplete="new-password" required
-              minLength={12} maxLength={256} value={confirmation}
-              onChange={(event) => setConfirmation(event.target.value)} />
+            <input
+              className={inputClass}
+              type="password"
+              autoComplete="new-password"
+              required
+              minLength={12}
+              maxLength={256}
+              value={confirmation}
+              onChange={(event) => setConfirmation(event.target.value)}
+            />
           </label>
-          {error && <p role="alert" className="border border-red-700 bg-red-50 p-3 font-mono text-sm text-red-800">{error}</p>}
-          <button disabled={pending}
-            className="border border-black bg-blue-700 p-3 font-mono text-sm font-bold uppercase text-white shadow-sw-default disabled:opacity-60">
+          {error && (
+            <p
+              role="alert"
+              className="border border-red-700 bg-red-50 p-3 font-mono text-sm text-red-800"
+            >
+              {error}
+            </p>
+          )}
+          <button
+            disabled={pending}
+            className="border border-black bg-blue-700 p-3 font-mono text-sm font-bold uppercase text-white shadow-sw-default disabled:opacity-60"
+          >
             {pending ? 'Creating account…' : 'Create account'}
           </button>
         </form>
         <p className="mt-8 font-mono text-xs">
-          Already have an account? <Link href="/login" className="underline">Sign in</Link>
+          Already have an account?{' '}
+          <Link href="/login" className="underline">
+            Sign in
+          </Link>
         </p>
       </section>
     </main>
