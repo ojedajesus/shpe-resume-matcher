@@ -27,16 +27,16 @@ def test_word_export_preserves_content_order_visibility_and_editable_text(sample
         dict(id='additional', key='additional', displayName='Skills', sectionType='stringList', order=5),
     ]
     sample_resume['customSections'] = {'custom_1': {'sectionType':'itemList', 'items':[{'title':'Volunteer', 'subtitle':'Example Club', 'years':'2026', 'description':['<p>Built <em>beds</em></p>', 'Plain point'], 'descriptionStyles':['bullet','plain']}]}}
-    content = render_resume_docx(ResumeData.model_validate(sample_resume))
+    content = render_resume_docx(ResumeData.model_validate(sample_resume), page_size="LETTER")
     with ZipFile(BytesIO(content)) as archive:
         assert 'word/document.xml' in archive.namelist()
         assert not any('media/' in name for name in archive.namelist())
     document = Document(BytesIO(content))
     text = '\n'.join(p.text for p in document.paragraphs)
-    assert 'José Example' in text
+    assert 'JOSÉ EXAMPLE' in text
     assert 'Python developer & student' in text
     assert 'Built beds' in text and 'Plain point' in text
-    assert text.index('Leadership') < text.index('Profile') < text.index('Education')
+    assert text.index('LEADERSHIP') < text.index('PROFILE') < text.index('EDUCATION')
     assert 'Acme Corp' not in text
     assert '<strong>' not in text
     assert document.sections[0].page_width.inches == 8.5
@@ -52,7 +52,7 @@ def test_word_export_all_default_fields_and_a4(sample_resume):
     assert round(document.sections[0].page_height.mm) == 297
     assert round(document.sections[0].left_margin.mm) == 17
     text = '\n'.join(p.text for p in document.paragraphs)
-    for expected in ['Jane Doe', 'Acme Corp', 'MIT', 'OpenAPI Generator', 'PostgreSQL', 'Spanish (Conversational)', 'AWS Solutions Architect Associate', 'Employee of the Year 2022']:
+    for expected in ['JANE DOE', 'Acme Corp', 'MIT', 'OpenAPI Generator', 'PostgreSQL', 'Spanish (Conversational)', 'AWS Solutions Architect Associate', 'Employee of the Year 2022']:
         assert expected in text
 
 
@@ -80,7 +80,32 @@ async def test_word_endpoint_session_owner_isolation_and_not_ready(isolated_back
         assert exported.headers['content-type'] == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
         assert 'resume.docx' in exported.headers['content-disposition']
         assert exported.headers['cache-control'] == 'private, no-store'
-        assert Document(BytesIO(exported.content)).paragraphs[0].text == 'Jane Doe'
+        assert Document(BytesIO(exported.content)).paragraphs[0].text == 'JANE DOE'
         assert (await client.get(f"/api/v1/resumes/{other['resume_id']}/docx")).status_code == 404
         assert (await client.get(f"/api/v1/resumes/{pending['resume_id']}/docx")).status_code == 409
         assert (await client.get(f"/api/v1/resumes/{own['resume_id']}/docx?pageSize=INVALID")).status_code == 422
+
+
+def test_word_export_matches_preview_geometry_typography_and_entry_layout(sample_resume):
+    from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
+    document = Document(BytesIO(render_resume_docx(ResumeData.model_validate(sample_resume))))
+    assert round(document.sections[0].page_width.mm) == 210
+    assert round(document.sections[0].left_margin.mm) == 10
+    assert document.styles['Title'].font.name == 'Georgia'
+    assert document.styles['Title'].font.size.pt == 21
+    assert document.styles['Normal'].font.name == 'Segoe UI'
+    assert document.styles['Normal'].font.size.pt == 10.5
+    assert document.paragraphs[0].alignment == WD_ALIGN_PARAGRAPH.CENTER
+    heading = next(p for p in document.paragraphs if p.text == 'EXPERIENCE')
+    assert heading._p.xpath('./w:pPr/w:pBdr/w:bottom')
+    job = next(p for p in document.paragraphs if p.text.startswith('Software Engineer'))
+    assert '\t' in job.text
+    assert job.paragraph_format.tab_stops[0].alignment == WD_TAB_ALIGNMENT.RIGHT
+    assert 'Acme Corp' not in job.text
+    company = next(p for p in document.paragraphs if p.text.startswith('Acme Corp'))
+    assert company is not None
+    tuned = Document(BytesIO(render_resume_docx(ResumeData.model_validate(sample_resume), font_size=5, header_font='mono', body_font='serif', compact=True)))
+    assert tuned.styles['Normal'].font.size.pt == 12
+    assert tuned.styles['Normal'].font.name == 'Georgia'
+    assert tuned.styles['Title'].font.name == 'Consolas'
+    assert tuned.styles['Heading 1'].paragraph_format.space_before < document.styles['Heading 1'].paragraph_format.space_before

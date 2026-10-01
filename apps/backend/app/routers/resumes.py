@@ -2052,11 +2052,19 @@ async def update_resume_endpoint(
 @router.get("/{resume_id}/docx")
 async def download_resume_docx(
     resume_id: str,
-    pageSize: str = Query("LETTER", pattern="^(A4|LETTER)$"),
-    marginTop: int = Query(20, ge=5, le=25),
-    marginBottom: int = Query(20, ge=5, le=25),
-    marginLeft: int = Query(20, ge=5, le=25),
-    marginRight: int = Query(20, ge=5, le=25),
+    pageSize: str = Query("A4", pattern="^(A4|LETTER)$"),
+    marginTop: int = Query(10, ge=5, le=25),
+    marginBottom: int = Query(10, ge=5, le=25),
+    marginLeft: int = Query(10, ge=5, le=25),
+    marginRight: int = Query(10, ge=5, le=25),
+    sectionSpacing: int = Query(3, ge=1, le=5),
+    itemSpacing: int = Query(2, ge=1, le=5),
+    lineHeight: int = Query(3, ge=1, le=5),
+    fontSize: int = Query(3, ge=1, le=5),
+    headerScale: int = Query(3, ge=1, le=5),
+    headerFont: str = Query("serif", pattern="^(serif|sans-serif|mono)$"),
+    bodyFont: str = Query("sans-serif", pattern="^(serif|sans-serif|mono)$"),
+    compactMode: bool = Query(False),
 ) -> Response:
     """Download this member's saved resume as an editable Word document."""
     resume = await db.get_resume(resume_id)
@@ -2071,6 +2079,9 @@ async def download_resume_docx(
     content = await asyncio.to_thread(
         render_resume_docx, data, page_size=pageSize,
         margins=(marginTop, marginBottom, marginLeft, marginRight),
+        section_spacing=sectionSpacing, item_spacing=itemSpacing, line_height=lineHeight,
+        font_size=fontSize, header_scale=headerScale, header_font=headerFont,
+        body_font=bodyFont, compact=compactMode,
     )
     return Response(
         content=content,
