@@ -42,7 +42,7 @@
     "eslint-config-next": "^16",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-prettier": "^5.5.5",
-    "jsdom": "^28.1.0",
+    "jsdom": "26.1.0",
     "prettier": "^3.8.1",
     "tailwindcss": "^4",
     "typescript": "^5",
@@ -51,6 +51,7 @@
   "overrides": {
     "undici": "^7.28.0",
     "postcss": "^8.5.10",
-    "sharp": "^0.35.4"
+    "sharp": "^0.35.4",
+    "jsdom": "26.1.0"
   }
 }
