@@ -130,7 +130,10 @@ def render_resume_docx(
             for run in p.runs:
                 run.font.name = "Consolas" if mono else families[body_font]
                 run.font.size = Pt(base * factor)
+            # Description rows retain the preview body line box.
             p.paragraph_format.line_spacing = Pt(base * factor * line)
+            if p.style.name == "List Bullet":
+                p.paragraph_format.line_spacing = Pt(base * line)
 
     def row(left, right, *, bold=False, subtitle=False):
         p = paragraph(left, bold=bold)
@@ -146,6 +149,11 @@ def render_resume_docx(
         p.paragraph_format.space_after = Pt(item_gap if subtitle else item_gap * .6)
         if subtitle:
             small(p, factor=.95)
+            for run in p.runs:
+                if body_font == "sans-serif":
+                    run.font.name = "Segoe UI Semibold"
+                else:
+                    run.bold = True
         p.paragraph_format.keep_with_next = True
         return p
 
@@ -158,7 +166,9 @@ def render_resume_docx(
                 subtitle = getattr(item, "company", None) or getattr(item, "role", None) or getattr(item, "subtitle", None)
             first = len(doc.paragraphs)
             p = row(title, item.years, bold=True)
-            p.paragraph_format.space_before = Pt(item_gap if index else 0)
+            # Word takes max(before, after); CSS adds the item and bullet gaps.
+            # Put the complete entry gap on this row so it cannot collapse.
+            p.paragraph_format.space_before = Pt(item_gap * 2 if index else 0)
             if subtitle or getattr(item, "location", None):
                 row(subtitle, getattr(item, "location", None), subtitle=True)
             for key in ("github", "website"):
@@ -174,6 +184,7 @@ def render_resume_docx(
                     p = paragraph(text, style=None if plain else "List Bullet")
                     if p is not None:
                         small(p)
+                        p.paragraph_format.line_spacing = Pt(base * line)
                         p.paragraph_format.space_after = Pt(item_gap * .75)
                         if not plain:
                             p.paragraph_format.left_indent = Pt(18)
@@ -259,9 +270,13 @@ def render_resume_docx(
                     values = getattr(data.additional, key)
                     if values:
                         p = doc.add_paragraph()
-                        p.add_run(label + ": ").bold = True
+                        p.paragraph_format.left_indent = Pt(96)
+                        p.paragraph_format.first_line_indent = Pt(-96)
+                        p.paragraph_format.tab_stops.add_tab_stop(Pt(96))
+                        p.add_run(label + ":\t").bold = True
                         p.add_run(", ".join(plain_text(v) for v in values))
                         small(p)
+                        p.paragraph_format.line_spacing = Pt(base * line)
                         p.paragraph_format.space_after = Pt(item_gap * .6)
             elif value:
                 paragraph(meta.displayName, style="Heading 1")

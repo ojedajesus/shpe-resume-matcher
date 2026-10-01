@@ -109,3 +109,21 @@ def test_word_export_matches_preview_geometry_typography_and_entry_layout(sample
     assert tuned.styles['Normal'].font.name == 'Georgia'
     assert tuned.styles['Title'].font.name == 'Consolas'
     assert tuned.styles['Heading 1'].paragraph_format.space_before < document.styles['Heading 1'].paragraph_format.space_before
+
+
+def test_word_entry_spacing_and_skill_alignment_do_not_collapse(sample_resume):
+    document = Document(BytesIO(render_resume_docx(ResumeData.model_validate(sample_resume))))
+    first = next(p for p in document.paragraphs if p.text.startswith('Senior Backend Engineer\t'))
+    second = next(p for p in document.paragraphs if p.text.startswith('Software Engineer\t'))
+    bullet = next(p for p in document.paragraphs if p.text.startswith('Built REST APIs'))
+    assert first.paragraph_format.space_before.pt == 0
+    # Separate jobs retain a visible gap; wrapped bullets use the body line box.
+    assert second.paragraph_format.space_before.pt > bullet.paragraph_format.space_after.pt
+    assert bullet.paragraph_format.line_spacing.pt == pytest.approx(10.5 * 1.35, abs=.05)
+    company = next(p for p in document.paragraphs if p.text.startswith('Acme Corp'))
+    assert company.runs[0].font.name == 'Segoe UI Semibold'
+    skills = next(p for p in document.paragraphs if p.text.startswith('Technical Skills:'))
+    assert '\t' in skills.text
+    assert skills.paragraph_format.left_indent.pt == 96
+    assert skills.paragraph_format.first_line_indent.pt == -96
+    assert 'PostgreSQL' in skills.text
