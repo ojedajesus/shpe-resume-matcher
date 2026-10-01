@@ -79,9 +79,21 @@ def render_resume_docx(
     line = (1.15, 1.25, 1.35, 1.45, 1.55)[line_height - 1] * (.92 if compact else 1)
     families = {"serif": "Georgia", "sans-serif": "Segoe UI", "mono": "Consolas"}
 
+    def precise_size(target, size):
+        # OOXML sizes use half points. Preserve fractional CSS widths with
+        # Word's native text scale instead of truncating every smaller run.
+        rounded = round(size * 2) / 2
+        target.font.size = Pt(rounded)
+        props = target.element.get_or_add_rPr() if hasattr(target, "element") else target._r.get_or_add_rPr()
+        scale = props.find(qn("w:w"))
+        if scale is None:
+            scale = OxmlElement("w:w")
+            props.append(scale)
+        scale.set(qn("w:val"), str(round(size / rounded * 100)))
+
     def font(style, family, size, bold=False, color="1F2937"):
         style.font.name = family
-        style.font.size = Pt(size)
+        precise_size(style, size)
         style.font.bold = bold
         style.font.color.rgb = RGBColor.from_string(color)
         # Remove theme overrides inherited from python-docx's template.
@@ -129,7 +141,7 @@ def render_resume_docx(
         if p is not None:
             for run in p.runs:
                 run.font.name = "Consolas" if mono else families[body_font]
-                run.font.size = Pt(base * factor)
+                precise_size(run, base * factor)
             # Description rows retain the preview body line box.
             p.paragraph_format.line_spacing = Pt(base * factor * line)
             if p.style.name == "List Bullet":
@@ -144,7 +156,7 @@ def render_resume_docx(
             run = p.add_run("\t" + plain_text(right))
             run.bold = False
             run.font.name = families[body_font] if subtitle else "Consolas"
-            run.font.size = Pt(base * (.95 if subtitle else .75))
+            precise_size(run, base * (.95 if subtitle else .75))
             run.font.color.rgb = RGBColor.from_string("374151" if subtitle else "4B5563")
         p.paragraph_format.space_after = Pt(item_gap if subtitle else item_gap * .6)
         if subtitle:
@@ -184,7 +196,10 @@ def render_resume_docx(
                     p = paragraph(text, style=None if plain else "List Bullet")
                     if p is not None:
                         small(p)
-                        p.paragraph_format.line_spacing = Pt(base * line)
+                        # Compact serif text uses the smaller CSS line box;
+                        # keeping the full body box stretches every bullet.
+                        description_scale = .92 if compact and body_font == "serif" else 1
+                        p.paragraph_format.line_spacing = Pt(base * description_scale * line)
                         p.paragraph_format.space_after = Pt(item_gap * .75)
                         if not plain:
                             p.paragraph_format.left_indent = Pt(18)
@@ -276,7 +291,10 @@ def render_resume_docx(
                         p.add_run(label + ":\t").bold = True
                         p.add_run(", ".join(plain_text(v) for v in values))
                         small(p)
-                        p.paragraph_format.line_spacing = Pt(base * line)
+                        # Compact serif text uses the smaller CSS line box;
+                        # keeping the full body box stretches every bullet.
+                        description_scale = .92 if compact and body_font == "serif" else 1
+                        p.paragraph_format.line_spacing = Pt(base * description_scale * line)
                         p.paragraph_format.space_after = Pt(item_gap * .6)
             elif value:
                 paragraph(meta.displayName, style="Heading 1")

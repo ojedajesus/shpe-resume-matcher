@@ -127,3 +127,15 @@ def test_word_entry_spacing_and_skill_alignment_do_not_collapse(sample_resume):
     assert skills.paragraph_format.left_indent.pt == 96
     assert skills.paragraph_format.first_line_indent.pt == -96
     assert 'PostgreSQL' in skills.text
+
+
+def test_fractional_text_sizes_retain_pdf_widths_in_compact_serif_export(sample_resume):
+    document = Document(BytesIO(render_resume_docx(ResumeData.model_validate(sample_resume), font_size=2, body_font='serif', compact=True)))
+    bullet = next(p for p in document.paragraphs if p.text.startswith('Built REST APIs'))
+    run = bullet.runs[0]
+    # 8.28pt CSS text must not silently become unscaled 8pt Word text.
+    assert run.font.size.pt == 8.5
+    assert run._r.xpath('./w:rPr/w:w')[0].get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val') == '97'
+    assert bullet.text.startswith('Built REST APIs')
+    assert bullet.paragraph_format.line_spacing.pt == pytest.approx(9 * .92 * 1.35 * .92, abs=.05)
+    assert document.styles['Heading 1'].font.size.pt == 11
