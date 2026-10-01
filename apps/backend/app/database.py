@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
 from app.db_engine import init_models_sync, make_async_engine, make_sync_engine
-from app.models import ApiKey, Application, Improvement, Job, Resume, TailoringPreview
+from app.models import ApiKey, Application, Improvement, Job, Resume, TailoringPreview, CloudConfig, RenderDraft
 from app.preview import (
     PreviewBusyError,
     PreviewClaim,
@@ -60,6 +60,12 @@ ProcessingFinishOutcome = Literal["committed", "stale", "missing"]
 MAX_MASTER_RESUMES = 5
 
 
+def _owner() -> str:
+    """Late import avoids the auth/router ↔ database initialization cycle."""
+    from app.auth import current_user_id
+    return current_user_id.get()
+
+
 class DatabaseBusyError(RuntimeError):
     """A write reservation could not be obtained; retry the unchanged request."""
 
@@ -74,6 +80,8 @@ def _translate_write_errors() -> Iterator[None]:
     try:
         yield
     except OperationalError as error:
+        if getattr(error.orig, "sqlstate", None) in {"55P03", "40P01", "40001"}:
+            raise DatabaseBusyError("Database is busy") from error
         code = getattr(error.orig, "sqlite_errorcode", None)
         if isinstance(code, int) and code & 0xFF in (
             sqlite3.SQLITE_BUSY,
@@ -107,6 +115,7 @@ class Database:
     """Async SQLAlchemy facade for resume matcher data."""
 
     def __init__(self, db_path: Path | None = None):
+        self.database_url = settings.database_url if db_path is None else ""
         self.db_path = db_path or settings.sqlite_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._async_engine = None
@@ -126,12 +135,12 @@ class Database:
         """
         if self._initialized:
             return
-        self._sync_engine = make_sync_engine(self.db_path)
+        self._sync_engine = make_sync_engine(self.db_path, self.database_url)
         self._sync_session_factory = sessionmaker(
             self._sync_engine, expire_on_commit=False
         )
         init_models_sync(self._sync_engine)
-        self._async_engine = make_async_engine(self.db_path)
+        self._async_engine = make_async_engine(self.db_path, self.database_url)
         self._async_session_factory = async_sessionmaker(
             self._async_engine, expire_on_commit=False
         )
@@ -153,7 +162,13 @@ class Database:
         """
         with _translate_write_errors():
             async with self._session() as session:
-                await session.execute(text("BEGIN IMMEDIATE"))
+                if self.database_url:
+                    # Serialize short app write transactions across workers,
+                    # preserving SQLite's reservation/quota/idempotency contract.
+                    await session.execute(text("SET LOCAL lock_timeout = '5s'"))
+                    await session.execute(text("SELECT pg_advisory_xact_lock(734820196)"))
+                else:
+                    await session.execute(text("BEGIN IMMEDIATE"))
                 yield session
 
     @property
@@ -164,10 +179,19 @@ class Database:
 
     @contextmanager
     def _sync_write_session(self) -> Iterator[Session]:
-        """Reserve a synchronous key-store writer with the same busy contract."""
+        """Serialize auth/quota/config writes independently of document writes.
+
+        These synchronous tables are not written by async document methods.
+        A separate lock avoids blocking the event loop behind its own async
+        transaction while retaining cross-worker auth and quota atomicity.
+        """
         with _translate_write_errors():
             with self._sync() as session:
-                session.execute(text("BEGIN IMMEDIATE"))
+                if self.database_url:
+                    session.execute(text("SET LOCAL lock_timeout = '5s'"))
+                    session.execute(text("SELECT pg_advisory_xact_lock(734820197)"))
+                else:
+                    session.execute(text("BEGIN IMMEDIATE"))
                 yield session
 
     async def close(self) -> None:
@@ -181,6 +205,41 @@ class Database:
             self._sync_engine = None
             self._sync_session_factory = None
         self._initialized = False
+
+    def get_cloud_config(self) -> dict:
+        with self._sync() as session:
+            row = session.get(CloudConfig, "shared")
+            return copy.deepcopy(row.value) if row else {}
+
+    def save_cloud_config(self, value: dict) -> None:
+        with self._sync_write_session() as session:
+            row = session.get(CloudConfig, "shared")
+            if row:
+                row.value = copy.deepcopy(value)
+            else:
+                session.add(CloudConfig(config_id="shared", value=copy.deepcopy(value)))
+            session.commit()
+
+    def put_render_draft(self, data: dict, ttl: float) -> str:
+        token = uuid4().hex
+        with self._sync_write_session() as session:
+            session.execute(delete(RenderDraft).where(RenderDraft.expires_at <= _now()))
+            session.add(RenderDraft(token=token, owner_id=_owner(), value=data,
+                expires_at=(datetime.now(timezone.utc) + timedelta(seconds=ttl)).isoformat()))
+            session.commit()
+        return token
+
+    def get_render_draft(self, token: str) -> dict | None:
+        with self._sync() as session:
+            row = session.get(RenderDraft, token)
+            if row and row.owner_id == _owner() and row.expires_at > _now():
+                return copy.deepcopy(row.value)
+        return None
+
+    def discard_render_draft(self, token: str) -> None:
+        with self._sync_write_session() as session:
+            session.execute(delete(RenderDraft).where(RenderDraft.token == token, RenderDraft.owner_id == _owner()))
+            session.commit()
 
     # -- row -> dict converters ---------------------------------------------
 
@@ -295,7 +354,7 @@ class Database:
     def _new_resume(**values: Any) -> Resume:
         """Construct a resume row for standalone or compound transactions."""
         now = _now()
-        return Resume(resume_id=str(uuid4()), created_at=now, updated_at=now, **values)
+        return Resume(resume_id=str(uuid4()), owner_id=_owner(), created_at=now, updated_at=now, **values)
 
     async def create_resume_atomic_master(
         self,
@@ -328,7 +387,7 @@ class Database:
             masters = (
                 await session.execute(
                     select(Resume)
-                    .where(Resume.is_master.is_(True))
+                    .where(Resume.is_master.is_(True), Resume.owner_id == _owner())
                     .order_by(Resume.created_at)
                 )
             ).scalars().all()
@@ -374,7 +433,7 @@ class Database:
     async def get_resume(self, resume_id: str) -> dict[str, Any] | None:
         """Get resume by ID."""
         async with self._session() as session:
-            row = await session.get(Resume, resume_id)
+            row = await session.scalar(select(Resume).where(Resume.resume_id == resume_id, Resume.owner_id == _owner()))
             return self._resume_to_dict(row) if row else None
 
     async def get_master_resume(self) -> dict[str, Any] | None:
@@ -382,7 +441,7 @@ class Database:
         async with self._session() as session:
             result = await session.execute(
                 select(Resume)
-                .where(Resume.is_master.is_(True))
+                .where(Resume.is_master.is_(True), Resume.owner_id == _owner())
                 .order_by(Resume.is_default_master.desc(), Resume.created_at)
             )
             row = result.scalars().first()
@@ -392,7 +451,7 @@ class Database:
         """List every master track, oldest first."""
         async with self._session() as session:
             result = await session.execute(
-                select(Resume).where(Resume.is_master.is_(True)).order_by(Resume.created_at)
+                select(Resume).where(Resume.is_master.is_(True), Resume.owner_id == _owner()).order_by(Resume.created_at)
             )
             return [self._resume_to_dict(row) for row in result.scalars().all()]
 
@@ -407,7 +466,7 @@ class Database:
                 unaffected.
         """
         async with self._write_session() as session:
-            row = await session.get(Resume, resume_id)
+            row = await session.scalar(select(Resume).where(Resume.resume_id == resume_id, Resume.owner_id == _owner()))
             if row is None:
                 raise ResumeNotFoundError(resume_id)
             for key, value in updates.items():
@@ -446,7 +505,7 @@ class Database:
         async with self._write_session() as session:
             result = await session.execute(
                 update(Resume)
-                .where(Resume.resume_id == resume_id, eligible)
+                .where(Resume.resume_id == resume_id, Resume.owner_id == _owner(), eligible)
                 .values(
                     processing_status="processing",
                     processing_token=token,
@@ -458,7 +517,7 @@ class Database:
                 return token
 
             exists = await session.scalar(
-                select(Resume.resume_id).where(Resume.resume_id == resume_id)
+                select(Resume.resume_id).where(Resume.resume_id == resume_id, Resume.owner_id == _owner())
             )
             if exists is None:
                 raise ResumeNotFoundError(resume_id)
@@ -488,7 +547,7 @@ class Database:
             result = await session.execute(
                 update(Resume)
                 .where(
-                    Resume.resume_id == resume_id,
+                    Resume.resume_id == resume_id, Resume.owner_id == _owner(),
                     Resume.processing_token == token,
                     Resume.processing_status == "processing",
                 )
@@ -499,14 +558,14 @@ class Database:
                 return "committed"
 
             exists = await session.scalar(
-                select(Resume.resume_id).where(Resume.resume_id == resume_id)
+                select(Resume.resume_id).where(Resume.resume_id == resume_id, Resume.owner_id == _owner())
             )
             return "stale" if exists is not None else "missing"
 
     async def delete_resume(self, resume_id: str) -> bool:
         """Delete resume by ID."""
         async with self._write_session() as session:
-            row = await session.get(Resume, resume_id)
+            row = await session.scalar(select(Resume).where(Resume.resume_id == resume_id, Resume.owner_id == _owner()))
             if row is None:
                 return False
             # Keep a content-free consumed marker for deleted results so retries
@@ -529,7 +588,7 @@ class Database:
                 successor = (
                     await session.execute(
                         select(Resume)
-                        .where(Resume.is_master.is_(True))
+                        .where(Resume.is_master.is_(True), Resume.owner_id == _owner())
                         .order_by(Resume.created_at)
                         .limit(1)
                     )
@@ -542,18 +601,18 @@ class Database:
     async def list_resumes(self) -> list[dict[str, Any]]:
         """List all resumes."""
         async with self._session() as session:
-            result = await session.execute(select(Resume).order_by(Resume.created_at))
+            result = await session.execute(select(Resume).where(Resume.owner_id == _owner()).order_by(Resume.created_at))
             return [self._resume_to_dict(row) for row in result.scalars().all()]
 
     async def set_default_master_resume(self, resume_id: str) -> bool:
         """Make an existing master the default; False if missing or not a master."""
         async with self._write_session() as session:
-            target = await session.get(Resume, resume_id)
+            target = await session.scalar(select(Resume).where(Resume.resume_id == resume_id, Resume.owner_id == _owner()))
             if target is None or not target.is_master:
                 logger.warning("Cannot set default master: %s is not a master", resume_id)
                 return False
             current = await session.execute(
-                select(Resume).where(Resume.is_default_master.is_(True))
+                select(Resume).where(Resume.is_default_master.is_(True), Resume.owner_id == _owner())
             )
             for row in current.scalars().all():
                 if row.resume_id != resume_id:
@@ -577,6 +636,7 @@ class Database:
         rows = [
             Job(
                 job_id=str(uuid4()),
+                owner_id=_owner(),
                 content=content,
                 resume_id=resume_id,
                 created_at=_now(),
@@ -592,7 +652,7 @@ class Database:
     async def get_job(self, job_id: str) -> dict[str, Any] | None:
         """Get job by ID (dynamic fields flattened to top level)."""
         async with self._session() as session:
-            row = await session.get(Job, job_id)
+            row = await session.scalar(select(Job).where(Job.job_id == job_id, Job.owner_id == _owner()))
             return self._job_to_dict(row) if row else None
 
     async def update_job(
@@ -606,7 +666,7 @@ class Database:
         ``get_job`` as top-level keys.
         """
         async with self._write_session() as session:
-            row = await session.get(Job, job_id)
+            row = await session.scalar(select(Job).where(Job.job_id == job_id, Job.owner_id == _owner()))
             if row is None:
                 return None
             meta = dict(row.metadata_json or {})
@@ -623,7 +683,7 @@ class Database:
     async def delete_job(self, job_id: str) -> bool:
         """Delete a job by ID (used to clean up an orphaned manual-add job)."""
         async with self._write_session() as session:
-            row = await session.get(Job, job_id)
+            row = await session.scalar(select(Job).where(Job.job_id == job_id, Job.owner_id == _owner()))
             if row is None:
                 return False
             await session.execute(
@@ -672,6 +732,7 @@ class Database:
         now = _now()
         row = TailoringPreview(
             preview_id=str(uuid4()),
+            owner_id=_owner(),
             improvements=copy.deepcopy(improvements or []),
             source_data=copy.deepcopy(source_data),
             source_id=source_id,
@@ -724,7 +785,7 @@ class Database:
         """Claim once across workers; committed retries bypass generation."""
         async with self._write_session() as session:
             if preview_id:
-                row = await session.get(TailoringPreview, preview_id)
+                row = await session.scalar(select(TailoringPreview).where(TailoringPreview.preview_id == preview_id, TailoringPreview.owner_id == _owner()))
             else:
                 # Compatibility for clients that omit the new operation ID.
                 row = (
@@ -732,6 +793,7 @@ class Database:
                         select(TailoringPreview)
                         .where(
                             TailoringPreview.source_id == source_id,
+                            TailoringPreview.owner_id == _owner(),
                             TailoringPreview.job_id == job_id,
                             TailoringPreview.payload_hash == payload_hash,
                             or_(TailoringPreview.result_resume_id.is_not(None), TailoringPreview.expires_at > _now()),
@@ -788,7 +850,7 @@ class Database:
         if not claim.token:
             return
         async with self._write_session() as session:
-            row = await session.get(TailoringPreview, claim.preview_id)
+            row = await session.scalar(select(TailoringPreview).where(TailoringPreview.preview_id == claim.preview_id, TailoringPreview.owner_id == _owner()))
             if row is not None and claim.token and row.claim_token == claim.token:
                 row.claim_token = None
                 row.claim_expires_at = None
@@ -804,7 +866,7 @@ class Database:
     ) -> dict[str, Any]:
         """Commit resume, required relation and replay snapshot atomically."""
         async with self._write_session() as session:
-            preview = await session.get(TailoringPreview, claim.preview_id)
+            preview = await session.scalar(select(TailoringPreview).where(TailoringPreview.preview_id == claim.preview_id, TailoringPreview.owner_id == _owner()))
             now = _now()
             if (
                 preview is None
@@ -829,6 +891,7 @@ class Database:
             session.add(
                 Improvement(
                     request_id=result["request_id"],
+                    owner_id=_owner(),
                     original_resume_id=preview.source_id,
                     tailored_resume_id=row.resume_id,
                     job_id=preview.job_id,
@@ -864,6 +927,7 @@ class Database:
             session.add(
                 Improvement(
                     request_id=request_id,
+                    owner_id=_owner(),
                     original_resume_id=original_resume_id,
                     tailored_resume_id=row.resume_id,
                     job_id=job_id,
@@ -888,6 +952,7 @@ class Database:
             session.add(
                 Improvement(
                     request_id=request_id,
+                    owner_id=_owner(),
                     original_resume_id=original_resume_id,
                     tailored_resume_id=tailored_resume_id,
                     job_id=job_id,
@@ -912,7 +977,8 @@ class Database:
         async with self._session() as session:
             result = await session.execute(
                 select(Improvement).where(
-                    Improvement.tailored_resume_id == tailored_resume_id
+                    Improvement.tailored_resume_id == tailored_resume_id,
+                    Improvement.owner_id == _owner(),
                 )
             )
             row = result.scalars().first()
@@ -924,7 +990,7 @@ class Database:
         result = await session.execute(
             select(func.count())
             .select_from(Application)
-            .where(Application.status == status)
+            .where(Application.status == status, Application.owner_id == _owner())
         )
         return int(result.scalar() or 0)
 
@@ -932,7 +998,7 @@ class Database:
         """Renumber a column's positions to a contiguous 0..n-1 sequence."""
         result = await session.execute(
             select(Application)
-            .where(Application.status == status)
+            .where(Application.status == status, Application.owner_id == _owner())
             .order_by(Application.position, Application.created_at)
         )
         for index, row in enumerate(result.scalars().all()):
@@ -959,6 +1025,7 @@ class Database:
         position = await self._next_position(session, status)
         row = Application(
             application_id=str(uuid4()),
+            owner_id=_owner(),
             job_id=job_id,
             resume_id=resume_id,
             master_resume_id=master_resume_id,
@@ -988,6 +1055,7 @@ class Database:
         async with self._write_session() as session:
             job = Job(
                 job_id=str(uuid4()),
+                owner_id=_owner(),
                 content=content,
                 resume_id=resume_id,
                 created_at=_now(),
@@ -1082,7 +1150,7 @@ class Database:
     ) -> list[dict[str, Any]]:
         """List applications ordered by (status, position)."""
         async with self._session() as session:
-            stmt = select(Application)
+            stmt = select(Application).where(Application.owner_id == _owner())
             if status is not None:
                 stmt = stmt.where(Application.status == status)
             stmt = stmt.order_by(Application.status, Application.position)
@@ -1092,7 +1160,7 @@ class Database:
     async def get_application(self, application_id: str) -> dict[str, Any] | None:
         """Get an application by ID."""
         async with self._session() as session:
-            row = await session.get(Application, application_id)
+            row = await session.scalar(select(Application).where(Application.application_id == application_id, Application.owner_id == _owner()))
             return self._application_to_dict(row) if row else None
 
     async def update_application(
@@ -1105,7 +1173,7 @@ class Database:
         column stays a contiguous 0..n-1 sequence.
         """
         async with self._write_session() as session:
-            row = await session.get(Application, application_id)
+            row = await session.scalar(select(Application).where(Application.application_id == application_id, Application.owner_id == _owner()))
             if row is None:
                 return None
 
@@ -1139,6 +1207,7 @@ class Database:
                     .where(
                         Application.status == new_status,
                         Application.application_id != application_id,
+                        Application.owner_id == _owner(),
                     )
                     .order_by(Application.position, Application.created_at)
                 )
@@ -1163,7 +1232,7 @@ class Database:
         async with self._write_session() as session:
             affected_old: set[str] = set()
             for application_id in application_ids:
-                row = await session.get(Application, application_id)
+                row = await session.scalar(select(Application).where(Application.application_id == application_id, Application.owner_id == _owner()))
                 if row is None:
                     continue
                 affected_old.add(row.status)
@@ -1187,7 +1256,7 @@ class Database:
     async def delete_application(self, application_id: str) -> bool:
         """Delete an application; renumber its column."""
         async with self._write_session() as session:
-            row = await session.get(Application, application_id)
+            row = await session.scalar(select(Application).where(Application.application_id == application_id, Application.owner_id == _owner()))
             if row is None:
                 return False
             status = row.status
@@ -1203,7 +1272,7 @@ class Database:
         async with self._write_session() as session:
             affected: set[str] = set()
             for application_id in application_ids:
-                row = await session.get(Application, application_id)
+                row = await session.scalar(select(Application).where(Application.application_id == application_id, Application.owner_id == _owner()))
                 if row is None:
                     continue
                 affected.add(row.status)

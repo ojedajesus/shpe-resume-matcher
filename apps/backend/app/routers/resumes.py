@@ -30,6 +30,7 @@ from app.database import (
     db,
 )
 from app.pdf import render_resume_pdf, PDFRenderError
+from app.word_export import render_resume_docx
 from app.config import settings
 from app.preview import (
     PreviewBusyError,
@@ -114,6 +115,8 @@ from app.services.cover_letter import (
 )
 from app.services.interview_prep import generate_interview_prep
 from app.prompts import DEFAULT_IMPROVE_PROMPT_ID, IMPROVE_PROMPT_OPTIONS
+from app.auth import current_user_id
+from app.render_auth import issue_render_token
 
 logger = logging.getLogger(__name__)
 _PROCESSING_CLEANUP_TIMEOUT_SECONDS = 5.0
@@ -2046,6 +2049,49 @@ async def update_resume_endpoint(
     )
 
 
+@router.get("/{resume_id}/docx")
+async def download_resume_docx(
+    resume_id: str,
+    template: str = Query("swiss-single", pattern="^(swiss-single|swiss-two-column|modern|modern-two-column|latex|clean|vivid)$"),
+    accentColor: str = Query("blue", pattern="^(blue|green|orange|red)$"),
+    pageSize: str = Query("A4", pattern="^(A4|LETTER)$"),
+    marginTop: int = Query(10, ge=5, le=25),
+    marginBottom: int = Query(10, ge=5, le=25),
+    marginLeft: int = Query(10, ge=5, le=25),
+    marginRight: int = Query(10, ge=5, le=25),
+    sectionSpacing: int = Query(3, ge=1, le=5),
+    itemSpacing: int = Query(2, ge=1, le=5),
+    lineHeight: int = Query(3, ge=1, le=5),
+    fontSize: int = Query(3, ge=1, le=5),
+    headerScale: int = Query(3, ge=1, le=5),
+    headerFont: str = Query("serif", pattern="^(serif|sans-serif|mono)$"),
+    bodyFont: str = Query("sans-serif", pattern="^(serif|sans-serif|mono)$"),
+    compactMode: bool = Query(False),
+) -> Response:
+    """Download this member's saved resume as an editable Word document."""
+    resume = await db.get_resume(resume_id)
+    if not resume:
+        raise HTTPException(status_code=404, detail="Resume not found")
+    if resume.get("processing_status") != "ready" or not resume.get("processed_data"):
+        raise HTTPException(status_code=409, detail="Resume is not ready for Word export")
+    try:
+        data = ResumeData.model_validate(resume["processed_data"])
+    except ValidationError as error:
+        raise HTTPException(status_code=409, detail="Resume data must be repaired before Word export") from error
+    content = await asyncio.to_thread(
+        render_resume_docx, data, template=template, accent_color=accentColor, page_size=pageSize,
+        margins=(marginTop, marginBottom, marginLeft, marginRight),
+        section_spacing=sectionSpacing, item_spacing=itemSpacing, line_height=lineHeight,
+        font_size=fontSize, header_scale=headerScale, header_font=headerFont,
+        body_font=bodyFont, compact=compactMode,
+    )
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": 'attachment; filename="resume.docx"', "Cache-Control": "private, no-store"},
+    )
+
+
 @router.get("/{resume_id}/pdf")
 async def download_resume_pdf(
     resume_id: str,
@@ -2109,7 +2155,8 @@ async def download_resume_pdf(
     )
     if lang:
         params = f"{params}&lang={lang}"
-    url = f"{settings.frontend_base_url}/print/resumes/{resume_id}?{params}"
+    render_token = issue_render_token(current_user_id.get(), resume_id)
+    url = f"{settings.frontend_base_url}/print/resumes/{resume_id}?{params}&renderToken={render_token}"
 
     # Use the exact margins provided; compact mode only affects spacing.
     pdf_margins = {
@@ -2654,7 +2701,8 @@ async def download_cover_letter_pdf(
         )
 
     # Build print URL (same pattern as resume PDF)
-    url = f"{settings.frontend_base_url}/print/cover-letter/{resume_id}?pageSize={pageSize}"
+    render_token = issue_render_token(current_user_id.get(), resume_id)
+    url = f"{settings.frontend_base_url}/print/cover-letter/{resume_id}?pageSize={pageSize}&renderToken={render_token}"
     if lang:
         url = f"{url}&lang={lang}"
 

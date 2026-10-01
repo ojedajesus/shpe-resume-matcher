@@ -1,5 +1,6 @@
 {
   "common": {
+    "downloadWord": "Word 다운로드",
     "save": "저장",
     "saving": "저장 중...",
     "cancel": "취소",

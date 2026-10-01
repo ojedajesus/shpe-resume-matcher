@@ -858,6 +858,14 @@ async def render_resume_pdf(
         Margins are applied via Playwright's PDF margins, ensuring they appear
         on every page (not just the first page like HTML padding would).
     """
+    from app.config import settings
+    if settings.pdf_renderer_url:
+        from app.cloud_pdf import render_cloud_pdf
+        try:
+            return await render_cloud_pdf(url, page_size, selector, margins)
+        except Exception as error:
+            raise PDFRenderError("Cloud PDF rendering failed. Please try again.") from error
+
     global _subprocess_supported
 
     pdf_format = _resolve_pdf_format(page_size)

@@ -10,8 +10,9 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import create_engine, event
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from app.models import Base
 
@@ -40,20 +41,37 @@ def _url(path: Path, *, driver: str) -> str:
     return f"sqlite+{driver}:///{path}" if driver else f"sqlite:///{path}"
 
 
-def make_async_engine(path: Path) -> AsyncEngine:
+def _postgres_url(value: str):
+    url = make_url(value)
+    if url.get_backend_name() not in {"postgres", "postgresql"}:
+        raise ValueError("DATABASE_URL must be a Postgres connection URL")
+    return url.set(drivername="postgresql+psycopg")
+
+
+def make_async_engine(path: Path, database_url: str = "") -> AsyncEngine:
     """Create the async engine (``aiosqlite``) for the document tables."""
+    if database_url:
+        return create_async_engine(
+            _postgres_url(database_url), poolclass=NullPool,
+            connect_args={"prepare_threshold": None, "connect_timeout": 15, "sslmode": "require"},
+        )
     engine = create_async_engine(_url(path, driver="aiosqlite"), future=True)
     event.listen(engine.sync_engine, "connect", _apply_sqlite_pragmas)
     return engine
 
 
-def make_sync_engine(path: Path) -> Engine:
+def make_sync_engine(path: Path, database_url: str = "") -> Engine:
     """Create the sync engine used for the encrypted api_keys table.
 
     Key reads happen synchronously (``get_llm_config`` → ``load_config_file`` →
     ``resolve_api_key``), so a sync engine avoids threading async through
     ``llm.py``. It points at the same file as the async engine.
     """
+    if database_url:
+        return create_engine(
+            _postgres_url(database_url), poolclass=NullPool,
+            connect_args={"prepare_threshold": None, "connect_timeout": 15, "sslmode": "require"},
+        )
     engine = create_engine(_url(path, driver=""), future=True)
     event.listen(engine, "connect", _apply_sqlite_pragmas)
     return engine
@@ -61,11 +79,23 @@ def make_sync_engine(path: Path) -> Engine:
 
 def init_models_sync(engine: Engine) -> None:
     """Create all tables (idempotent) using a sync engine connection."""
+    if engine.dialect.name == "postgresql":
+        # Cloud DDL is applied explicitly through reviewed Supabase migrations.
+        # Runtime workers must never modify schema or run SQLite migrations.
+        return
     Base.metadata.create_all(engine)
 
     # ``create_all`` does not ALTER existing SQLite tables. Keep this additive
     # migration idempotent so older local databases can load resumes safely.
     with engine.begin() as conn:
+        # Ownership was added for the invite-only fork. Existing single-user
+        # content is quarantined under ``legacy`` until an owner deliberately
+        # adopts or deletes it; it is never assigned to the first member.
+        for table in ("resumes", "jobs", "improvements", "tailoring_previews", "applications"):
+            table_columns = conn.exec_driver_sql(f"PRAGMA table_info({table})").mappings().all()
+            if table_columns and "owner_id" not in {column["name"] for column in table_columns}:
+                conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN owner_id VARCHAR NOT NULL DEFAULT 'legacy'")
+                conn.exec_driver_sql(f"CREATE INDEX IF NOT EXISTS ix_{table}_owner_id ON {table} (owner_id)")
         columns = conn.exec_driver_sql("PRAGMA table_info(resumes)").mappings().all()
         existing_columns = {column["name"] for column in columns}
         if columns and "interview_prep" not in existing_columns:
@@ -81,6 +111,7 @@ def init_models_sync(engine: Engine) -> None:
             # Multi-track masters: the single-master slot is replaced by a
             # single-default slot. create_all never drops indexes on existing tables.
             conn.exec_driver_sql("DROP INDEX IF EXISTS ux_resumes_single_master")
+            conn.exec_driver_sql("DROP INDEX IF EXISTS ux_resumes_single_default_master")
             if "created_at" in existing_columns:
                 conn.exec_driver_sql(
                     "UPDATE resumes SET is_default_master = 1 WHERE resume_id = ("
@@ -90,7 +121,7 @@ def init_models_sync(engine: Engine) -> None:
                 )
             conn.exec_driver_sql(
                 "CREATE UNIQUE INDEX IF NOT EXISTS ux_resumes_single_default_master "
-                "ON resumes (is_default_master) WHERE is_default_master = 1"
+                "ON resumes (owner_id, is_default_master) WHERE is_default_master = 1"
             )
 
         preview_columns = conn.exec_driver_sql("PRAGMA table_info(tailoring_previews)").mappings().all()

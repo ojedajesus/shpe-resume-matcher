@@ -5,7 +5,7 @@ import logging
 from fastapi import APIRouter
 
 from app.database import db
-from app.llm import check_llm_health, get_llm_config
+from app.llm import get_llm_config
 from app.schemas import HealthResponse, StatusResponse
 
 logger = logging.getLogger(__name__)
@@ -45,8 +45,9 @@ async def get_status() -> StatusResponse:
         config = get_llm_config()
         # ollama / openai_compatible run without a key, matching check_llm_health.
         llm_configured = bool(config.api_key) or config.provider in ("ollama", "openai_compatible")
-        llm_status = await check_llm_health(config)
-        llm_healthy = bool(llm_status.get("healthy"))
+        # Status polling must never spend shared credits. A live provider probe
+        # is owner-initiated through the protected configuration endpoint.
+        llm_healthy = llm_configured
     except Exception:
         logger.exception("Status: LLM health check failed")
 

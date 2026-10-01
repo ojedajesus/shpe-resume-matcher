@@ -21,6 +21,7 @@ type PageProps = {
   searchParams?: Promise<{
     pageSize?: string;
     lang?: string;
+    renderToken?: string;
   }>;
 };
 
@@ -37,9 +38,13 @@ interface CoverLetterData {
   personalInfo: PersonalInfo;
 }
 
-async function fetchCoverLetterData(resumeId: string): Promise<CoverLetterData> {
+async function fetchCoverLetterData(
+  resumeId: string,
+  renderToken?: string
+): Promise<CoverLetterData> {
   const res = await fetch(`${API_BASE}/resumes?resume_id=${encodeURIComponent(resumeId)}`, {
     cache: 'no-store',
+    headers: renderToken ? { 'X-Internal-Render-Token': renderToken } : undefined,
   });
   if (!res.ok) {
     throw new Error(`Failed to load resume (status ${res.status}).`);
@@ -75,7 +80,10 @@ export default async function PrintCoverLetterPage({ params, searchParams }: Pag
   const locale = resolveLocale(resolvedSearchParams?.lang);
 
   // Fetch cover letter data from API (same pattern as resume)
-  const { coverLetter, personalInfo } = await fetchCoverLetterData(resolvedParams.id);
+  const { coverLetter, personalInfo } = await fetchCoverLetterData(
+    resolvedParams.id,
+    resolvedSearchParams?.renderToken
+  );
 
   // Standard cover letter margins
   const margins = { top: 25, right: 25, bottom: 25, left: 25 };

@@ -4,6 +4,7 @@ import type {
 } from '@/components/common/resume_previewer_context';
 import type { ResumeData } from '@/components/dashboard/resume-component';
 import { type TemplateSettings } from '@/lib/types/template-settings';
+import { readStoredTemplateSettings } from '@/lib/utils/stored-template-settings';
 import { type Locale } from '@/i18n/config';
 import { clearResumeWizardCompletion } from '@/lib/utils/resume-wizard-storage';
 import {
@@ -350,6 +351,23 @@ export async function downloadResumePdf(
     throw new Error(`Failed to download resume (status ${res.status}): ${text}`);
   }
   return await res.blob();
+}
+
+/** Download a member-owned editable Word document; no AI request is made. */
+export async function downloadResumeDocx(
+  resumeId: string,
+  settings?: TemplateSettings
+): Promise<Blob> {
+  const url = getResumePdfUrl(resumeId, settings ?? readStoredTemplateSettings()).replace(
+    '/pdf?',
+    '/docx?'
+  );
+  const res = await apiFetch(url);
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Failed to download Word document (status ${res.status}): ${text}`);
+  }
+  return res.blob();
 }
 
 /** Deletes a resume by ID */

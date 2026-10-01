@@ -44,6 +44,10 @@ def load_config() -> dict[str, Any]:
     Returns a deep copy so callers cannot corrupt the cached data.
     """
     global _config_cache, _config_cache_time, _config_cache_path
+    from app.config import settings, _read_config_json
+    if settings.database_url:
+        # Settings changes must be visible immediately to other cloud workers.
+        return _read_config_json()
     now = time.monotonic()
     config_path = get_config_path()
     if (

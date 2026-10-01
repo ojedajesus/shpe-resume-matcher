@@ -33,6 +33,9 @@ def get_config_path() -> Path:
 
 def _read_config_json() -> dict[str, Any]:
     """Raw read of config.json (no key injection)."""
+    if settings.database_url:
+        from app.database import db
+        return db.get_cloud_config()
     config_path = get_config_path()
     if config_path.exists():
         try:
@@ -53,6 +56,10 @@ def _write_config_json(config: dict[str, Any]) -> None:
     replacement are logged: the snapshot is already installed, so callers must
     still acknowledge the save and invalidate cached reads.
     """
+    if settings.database_url:
+        from app.database import db
+        db.save_cloud_config(config)
+        return
     serialized = json.dumps(config, indent=2)
     with _CONFIG_WRITE_LOCK:
         # Follow managed symlinks instead of replacing the link itself. Keep an
@@ -242,7 +249,7 @@ def _get_llm_api_key_with_fallback() -> str:
     import os
 
     # First check environment variable
-    env_key = os.environ.get("LLM_API_KEY", "")
+    env_key = os.environ.get("ANTHROPIC_API_KEY", "") or os.environ.get("LLM_API_KEY", "")
     if env_key:
         return env_key
 
@@ -275,6 +282,13 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    # Cloud deployments use Postgres and stable environment secrets. Local
+    # installs retain SQLite and their existing on-disk encryption secret.
+    database_url: str = ""
+    encryption_key: str = ""
+    pdf_renderer_url: str = ""
+    pdf_renderer_secret: str = ""
+
     # LLM Configuration
     llm_provider: Literal[
         "openai",
@@ -286,11 +300,17 @@ class Settings(BaseSettings):
         "deepseek",
         "groq",
         "ollama",
-    ] = "openai"
-    llm_model: str = "gpt-5-nano-2025-08-07"
+    ] = "anthropic"
+    llm_model: str = "claude-haiku-4-5-20251001"
     llm_api_key: str = ""
     llm_api_base: str | None = None  # For Ollama or custom endpoints
     log_llm: Literal["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"] = "WARNING"
+    auth_required: bool = True
+    cookie_secure: bool = True
+    session_hours: int = Field(default=12, ge=1, le=168)
+    ai_allowance_cents: int = Field(default=4000, ge=1)
+    anthropic_input_micros_per_token: int = Field(default=1, ge=0)
+    anthropic_output_micros_per_token: int = Field(default=5, ge=0)
 
     @field_validator("llm_provider", mode="before")
     @classmethod
@@ -390,7 +410,7 @@ class Settings(BaseSettings):
         return origins
 
     # Paths
-    data_dir: Path = Path(__file__).parent.parent / "data"
+    data_dir: Path = Path("/tmp/shpe-resume-matcher") if os.environ.get("VERCEL") else Path(__file__).parent.parent / "data"
 
     @property
     def db_path(self) -> Path:
@@ -414,6 +434,8 @@ class Settings(BaseSettings):
         """
         if self.llm_api_key:
             return self.llm_api_key
+        if self.llm_provider == "anthropic" and os.environ.get("ANTHROPIC_API_KEY"):
+            return os.environ["ANTHROPIC_API_KEY"]
         return _get_llm_api_key_with_fallback()
 
 

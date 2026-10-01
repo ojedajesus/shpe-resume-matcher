@@ -8,6 +8,7 @@ import Resume, { ResumeData } from '@/components/dashboard/resume-component';
 import {
   fetchResume,
   downloadResumePdf,
+  downloadResumeDocx,
   getResumePdfUrl,
   deleteResume,
   retryProcessing,
@@ -323,21 +324,24 @@ export default function ResumeViewerPage() {
     setShowEnrichmentModal(false);
   };
 
-  const handleDownload = async () => {
+  const handleDownload = async (format: 'pdf' | 'docx' = 'pdf') => {
     const token = beginDownload();
     if (token === null) return;
     setIsDownloading(true);
     try {
       setDownloadError(null);
-      const blob = await downloadResumePdf(resumeId, undefined, uiLanguage);
+      const blob =
+        format === 'docx'
+          ? await downloadResumeDocx(resumeId)
+          : await downloadResumePdf(resumeId, undefined, uiLanguage);
       const filename = sanitizeFilename(resumeTitle, resumeId, 'resume');
-      downloadBlobAsFile(blob, filename);
+      downloadBlobAsFile(blob, format === 'docx' ? filename.replace(/\.pdf$/, '.docx') : filename);
       if (!isCurrentDownload(token)) return;
       setShowDownloadSuccessDialog(true);
     } catch (err) {
       if (!isCurrentDownload(token)) return;
       console.error('Failed to download resume:', err);
-      if (err instanceof TypeError && err.message.includes('Failed to fetch')) {
+      if (format === 'pdf' && err instanceof TypeError && err.message.includes('Failed to fetch')) {
         const fallbackUrl = getResumePdfUrl(resumeId, undefined, uiLanguage);
         const didOpen = openUrlInNewTab(fallbackUrl);
         if (!didOpen) {
@@ -541,9 +545,21 @@ export default function ResumeViewerPage() {
                 {t('interviewPrep.title')}
               </Button>
             )}
-            <Button variant="success" onClick={handleDownload} disabled={isDownloading}>
+            <Button
+              variant="success"
+              onClick={() => handleDownload('pdf')}
+              disabled={isDownloading}
+            >
               <Download className="w-4 h-4" />
               {isDownloading ? t('common.generating') : t('resumeViewer.downloadResume')}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => handleDownload('docx')}
+              disabled={isDownloading}
+            >
+              <Download className="w-4 h-4" />
+              {isDownloading ? t('common.generating') : t('common.downloadWord')}
             </Button>
           </div>
         </div>

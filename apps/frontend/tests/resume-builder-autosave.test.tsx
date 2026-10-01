@@ -17,6 +17,8 @@ import React from 'react';
 
 const fetchResume = vi.fn();
 const updateResume = vi.fn();
+const downloadResumeDocx = vi.fn();
+const downloadBlobAsFile = vi.fn();
 
 let currentSearch = 'id=res-1';
 
@@ -29,6 +31,7 @@ vi.mock('@/lib/api/resume', () => ({
   fetchResume: (...args: unknown[]) => fetchResume(...args),
   updateResume: (...args: unknown[]) => updateResume(...args),
   downloadResumePdf: vi.fn(),
+  downloadResumeDocx: (...args: unknown[]) => downloadResumeDocx(...args),
   downloadCoverLetterPdf: vi.fn(),
   getResumePdfUrl: vi.fn(() => ''),
   getCoverLetterPdfUrl: vi.fn(() => ''),
@@ -38,6 +41,11 @@ vi.mock('@/lib/api/resume', () => ({
   generateOutreachMessage: vi.fn(),
   generateInterviewPrep: vi.fn(),
   fetchJobDescription: vi.fn(() => Promise.resolve(null)),
+}));
+
+vi.mock('@/lib/utils/download', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/utils/download')>()),
+  downloadBlobAsFile: (...args: unknown[]) => downloadBlobAsFile(...args),
 }));
 
 vi.mock('@/lib/i18n', () => ({
@@ -93,6 +101,9 @@ beforeEach(() => {
   localStorage.clear();
   fetchResume.mockReset();
   updateResume.mockReset();
+  downloadResumeDocx.mockReset();
+  downloadBlobAsFile.mockReset();
+  downloadResumeDocx.mockResolvedValue(new Blob(['editable word']));
   updateResume.mockResolvedValue({ processed_resume: REAL_RESUME });
 });
 
@@ -295,4 +306,35 @@ describe('resume builder autosave', () => {
     expect(screen.getByText('builder.leaveWithoutDraft.description')).toBeInTheDocument();
     expect(screen.queryByText('builder.leaveWithLocalDraft.description')).not.toBeInTheDocument();
   });
+});
+
+it('saves pending edits before downloading Word with a docx filename', async () => {
+  fetchResume.mockResolvedValue({ processed_resume: REAL_RESUME, parent_id: null, title: 'r' });
+  const ResumeBuilder = await importBuilder();
+  render(<ResumeBuilder />);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  await act(async () => {
+    screen.getByTestId('edit').click();
+  });
+  let completeSave: (value: unknown) => void = () => {};
+  updateResume.mockReturnValue(
+    new Promise((resolve) => {
+      completeSave = resolve;
+    })
+  );
+  await act(async () => {
+    screen.getByRole('button', { name: 'common.downloadWord' }).click();
+  });
+  expect(updateResume).toHaveBeenCalled();
+  expect(downloadResumeDocx).not.toHaveBeenCalled();
+  await act(async () => {
+    completeSave({ processed_resume: REAL_RESUME });
+  });
+  expect(downloadResumeDocx).toHaveBeenCalledWith('res-1', expect.any(Object));
+  expect(downloadBlobAsFile).toHaveBeenCalledWith(
+    expect.any(Blob),
+    expect.stringMatching(/\.docx$/)
+  );
 });

@@ -1,5 +1,6 @@
 {
   "common": {
+    "downloadWord": "Download Word",
     "save": "Save",
     "saving": "Saving...",
     "cancel": "Cancel",
@@ -34,7 +35,7 @@
     "resumeDeleted": "This resume was deleted. Upload or select another resume."
   },
   "home": {
-    "brandLine1": "Resume",
+    "brandLine1": "SHPE Resume",
     "brandLine2": "Matcher",
     "docs": "Docs",
     "launchApp": "Launch App"

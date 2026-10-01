@@ -5,7 +5,7 @@
  */
 
 const DEFAULT_PUBLIC_API_URL = '/';
-const INTERNAL_API_ORIGIN = 'http://127.0.0.1:8000';
+const INTERNAL_API_ORIGIN = process.env.BACKEND_ORIGIN || 'http://127.0.0.1:8000';
 
 function normalizeApiUrl(value: string): string {
   const trimmed = value.trim();
@@ -137,7 +137,20 @@ export async function apiFetch(
   }, timeout);
 
   try {
-    const request = fetch(url, { ...options, signal: controller.signal }).then(bufferResponse);
+    const headers: HeadersInit = { ...(options?.headers as Record<string, string> | undefined) };
+    if (
+      typeof window !== 'undefined' &&
+      !['GET', 'HEAD', 'OPTIONS'].includes(options?.method ?? 'GET')
+    ) {
+      const csrf = window.sessionStorage.getItem('shpe_csrf');
+      if (csrf) (headers as Record<string, string>)['X-CSRF-Token'] = csrf;
+    }
+    const request = fetch(url, {
+      ...options,
+      headers,
+      credentials: 'include',
+      signal: controller.signal,
+    }).then(bufferResponse);
     return await Promise.race([request, cancellation]);
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {

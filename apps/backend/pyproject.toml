@@ -12,6 +12,8 @@ dependencies = [
     "tinydb==4.8.2",
     "sqlalchemy[asyncio]==2.0.36",
     "aiosqlite==0.20.0",
+    "psycopg[binary]==3.2.13",
+    "httpx==0.28.1",
     "cryptography==50.0.0",
     "litellm==1.86.2",
     "markitdown[docx]==0.1.4",
@@ -64,3 +66,6 @@ markers = [
     "integration: API endpoint tests with httpx AsyncClient",
     "eval: prompt-quality evaluations; may call a real LLM, skipped without a configured key",
 ]
+
+[tool.vercel]
+entrypoint = "app.main:app"

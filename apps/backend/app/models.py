@@ -33,6 +33,7 @@ class Resume(Base):
     __tablename__ = "resumes"
 
     resume_id: Mapped[str] = mapped_column(String, primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String, nullable=False, index=True, default="legacy")
     content: Mapped[str] = mapped_column(Text)
     content_type: Mapped[str] = mapped_column(String, default="md")
     filename: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -59,9 +60,10 @@ class Resume(Base):
         # Many masters (career tracks) may exist; at most one is the default.
         Index(
             "ux_resumes_single_default_master",
-            "is_default_master",
+            "owner_id", "is_default_master",
             unique=True,
             sqlite_where=text("is_default_master = 1"),
+            postgresql_where=text("is_default_master = true"),
         ),
     )
 
@@ -79,6 +81,7 @@ class Job(Base):
     __tablename__ = "jobs"
 
     job_id: Mapped[str] = mapped_column(String, primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String, nullable=False, index=True, default="legacy")
     content: Mapped[str] = mapped_column(Text)
     resume_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=_utcnow_iso)
@@ -91,6 +94,7 @@ class Improvement(Base):
     __tablename__ = "improvements"
 
     request_id: Mapped[str] = mapped_column(String, primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String, nullable=False, index=True, default="legacy")
     original_resume_id: Mapped[str] = mapped_column(String)
     tailored_resume_id: Mapped[str] = mapped_column(String, index=True)
     job_id: Mapped[str] = mapped_column(String)
@@ -109,6 +113,7 @@ class TailoringPreview(Base):
     source_data: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     preview_id: Mapped[str] = mapped_column(String, primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String, nullable=False, index=True, default="legacy")
     source_id: Mapped[str] = mapped_column(String, index=True)
     job_id: Mapped[str] = mapped_column(String, index=True)
     payload_hash: Mapped[str] = mapped_column(String)
@@ -135,6 +140,7 @@ class Application(Base):
     )
 
     application_id: Mapped[str] = mapped_column(String, primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String, nullable=False, index=True, default="legacy")
     job_id: Mapped[str] = mapped_column(String, index=True)
     # The applied/tailored resume shown in the modal and opened by "Edit".
     resume_id: Mapped[str] = mapped_column(String, index=True)
@@ -163,3 +169,70 @@ class ApiKey(Base):
     provider: Mapped[str] = mapped_column(String, primary_key=True)
     ciphertext: Mapped[str] = mapped_column(Text)
     updated_at: Mapped[str] = mapped_column(String, default=_utcnow_iso)
+
+
+class User(Base):
+    """Invite-only member; officers receive metadata-only administration."""
+    __tablename__ = "users"
+    user_id: Mapped[str] = mapped_column(String, primary_key=True)
+    email: Mapped[str] = mapped_column(String, unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(Text)
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    monthly_limit_cents: Mapped[int] = mapped_column(Integer, default=500)
+    created_at: Mapped[str] = mapped_column(String, default=_utcnow_iso)
+
+
+class Session(Base):
+    __tablename__ = "sessions"
+    token_hash: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String, index=True)
+    csrf_token: Mapped[str] = mapped_column(String)
+    expires_at: Mapped[str] = mapped_column(String, index=True)
+
+
+class Invitation(Base):
+    __tablename__ = "invitations"
+    token_hash: Mapped[str] = mapped_column(String, primary_key=True)
+    email: Mapped[str] = mapped_column(String, index=True)
+    expires_at: Mapped[str] = mapped_column(String)
+    created_by: Mapped[str] = mapped_column(String)
+    used_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class UsageLedger(Base):
+    """Durable reservations make concurrent provider calls budget safe."""
+    __tablename__ = "usage_ledger"
+    usage_id: Mapped[str] = mapped_column(String, primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String, index=True)
+    operation: Mapped[str] = mapped_column(String)
+    reserved_cents: Mapped[int] = mapped_column(Integer)
+    actual_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String)
+    created_at: Mapped[str] = mapped_column(String, default=_utcnow_iso)
+
+
+class AuthAttempt(Base):
+    """Durable abuse-control counter without storing raw client addresses."""
+    __tablename__ = "auth_attempts"
+    attempt_id: Mapped[str] = mapped_column(String, primary_key=True)
+    subject_hash: Mapped[str] = mapped_column(String, index=True)
+    action: Mapped[str] = mapped_column(String, index=True)
+    created_at: Mapped[str] = mapped_column(String, default=_utcnow_iso, index=True)
+
+
+class CloudConfig(Base):
+    """Persistent configuration shared by serverless workers."""
+    __tablename__ = "cloud_config"
+    config_id: Mapped[str] = mapped_column(String, primary_key=True)
+    value: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class RenderDraft(Base):
+    """Short-lived print drafts shared across serverless workers."""
+    __tablename__ = "render_drafts"
+    token: Mapped[str] = mapped_column(String, primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    expires_at: Mapped[str] = mapped_column(String, index=True)
+    value: Mapped[dict] = mapped_column(JSON)
